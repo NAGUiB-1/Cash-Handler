@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>دفتر المحل</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Cpath d='M5 9l1.2-4h11.6L19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Tajawal:wght@400;500;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
@@ -185,8 +187,8 @@
     background: #fff; color: var(--ink-60); font-size: 13.5px; font-weight: 700;
     display: flex; flex-direction: column; align-items: center; gap: 4px;
   }
-  .subtype-btn.withdraw.active { border-color: var(--steel); background: color-mix(in srgb, var(--steel) 12%, white); color: var(--steel); }
-  .subtype-btn.deposit.active { border-color: var(--emerald); background: color-mix(in srgb, var(--emerald) 12%, white); color: var(--emerald); }
+  .subtype-btn.withdraw.active { border-color: var(--steel); background: #e7ecef; color: var(--steel); }
+  .subtype-btn.deposit.active { border-color: var(--emerald); background: #e4eeea; color: var(--emerald); }
 
   .warn-box { font-size: 13px; color: var(--rust); background: #f3e0da; padding: 12px; border-radius: 10px; margin-bottom: 14px; }
 
@@ -284,13 +286,14 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&am
 
 /* ---------------- domain model ---------------- */
 const WALLET_IDS = ["w1","w2","w3","w4"];
-const emptyOpening = () => ({ drawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machineDrawer: 0, islamBalance: 0 });
+const emptyOpening = () => ({ drawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machines: {}, islamBalance: 0 });
 const emptyDay = () => ({ status: "not_started", opening: emptyOpening(), transactions: [], closing: null, closedAt: null });
 
 function computeLive(dayData){
   const o = dayData.opening || emptyOpening();
-  let drawer = o.drawer, instapay = o.instapay, machineDrawer = o.machineDrawer, islamBalance = o.islamBalance || 0;
+  let drawer = o.drawer, instapay = o.instapay, islamBalance = o.islamBalance || 0;
   const wallets = { ...o.wallets };
+  const machines = { ...(o.machines || {}) };
   (dayData.transactions || []).forEach(t => {
     const amt = num(t.amount);
     const p = num(t.profit);
@@ -305,13 +308,13 @@ function computeLive(dayData){
       if (t.subtype === "سحب") { drawer += (-amt + p); islamBalance += amt; }
       if (t.subtype === "إيداع") { drawer += (amt + p); islamBalance -= amt; }
     } else if (t.category === "machine") {
-      machineDrawer += (amt + p);
+      machines[t.machineId] = (machines[t.machineId] || 0) + (amt + p);
     } else if (t.category === "expense") {
       // خوارج: مبلغ خرج من الدرج لجهة تانية (مندوب، صاحب المكان، إلخ)
       drawer -= amt;
     }
   });
-  return { drawer, wallets, instapay, machineDrawer, islamBalance };
+  return { drawer, wallets, instapay, machines, islamBalance };
 }
 
 /* ---------------- global state ---------------- */
@@ -367,6 +370,7 @@ const ICONS = {
   "loader-2": '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
   "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
   "user": '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/>',
+  "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
 };
 function icon(name, opts) {
   opts = opts || {};
@@ -377,6 +381,14 @@ function icon(name, opts) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:middle;${style}">${inner}</svg>`;
 }
 function refreshIcons() { /* no-op: icons are inline SVG, nothing to hydrate */ }
+
+const TINT15 = {
+  "var(--steel)": "#e1e7eb",
+  "var(--emerald)": "#dde9e5",
+  "var(--gold)": "#f3ebde",
+  "var(--rust)": "#f1e1df",
+};
+function tint15(color) { return TINT15[color] || "#eee"; }
 
 /* ---------------- render dispatch ---------------- */
 function render() {
@@ -413,7 +425,10 @@ function renderHeader(profit) {
           <div class="app-header-profit">
             <div class="app-header-profit-label">مكسب اليوم</div>
             <div class="app-header-profit-value num">${money(profit)} <span style="font-size:11px;font-weight:400;">ج.م</span></div>
-          </div>` : ""}
+          </div>
+          <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:rgba(242,236,218,0.12); border-radius:10px;">
+            ${icon("log-out", {size:17, color:"var(--paper)"})}
+          </button>` : ""}
       </div>
     </div>
   `;
@@ -459,8 +474,13 @@ function renderBalancesGrid(live) {
       </div>
       <div class="balance-row-flex" style="margin-bottom:8px;">
         ${balanceCard("wallet", "رصيد انستاباي", live.instapay)}
-        ${balanceCard("landmark", "درج شحن المكن", live.machineDrawer)}
       </div>
+      ${state.machines.length ? `
+        <div class="balance-section-label">أرصدة مكن الشحن</div>
+        <div class="balance-row2" style="margin-bottom:8px;">
+          ${state.machines.map(m => balanceCard("landmark", m.name, num(live.machines[m.id]))).join("")}
+        </div>
+      ` : ""}
       ${islamCard(live.islamBalance)}
     </div>
   `;
@@ -519,6 +539,11 @@ function renderTodayView(live) {
 
   return `
     ${closed && d.closing ? renderClosedStamp(d.closing, live) : ""}
+    ${closed ? `
+      <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:16px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.today, state.dayData)">
+        ${icon("download",{size:16})} تحميل PDF
+      </button>
+    ` : ""}
     ${renderBalancesGrid(live)}
     <div class="tx-list-header">
       <div class="tx-list-title">معاملات اليوم</div>
@@ -560,7 +585,7 @@ function renderTxRow(tx, editable) {
   }
   return `
     <div class="tx-row">
-      <div class="tx-row-icon" style="background: color-mix(in srgb, ${color} 15%, white);">
+      <div class="tx-row-icon" style="background: ${tint15(color)};">
         ${icon(iconName, {size:16, color})}
       </div>
       <div class="tx-row-body">
@@ -582,11 +607,12 @@ function renderTxRow(tx, editable) {
 }
 
 function renderClosedStamp(closing, live) {
+  const machineIds = Array.from(new Set([...Object.keys(closing.machines || {}), ...Object.keys(live.machines || {})]));
   const diffs = [
     num(closing.drawer) - live.drawer,
     ...WALLET_IDS.map(id => num(closing.wallets?.[id]) - live.wallets[id]),
     num(closing.instapay) - live.instapay,
-    num(closing.machineDrawer) - live.machineDrawer,
+    ...machineIds.map(id => num(closing.machines?.[id]) - num(live.machines?.[id])),
     num(closing.islamBalance) - live.islamBalance,
   ];
   const matched = diffs.every(d => Math.abs(d) < 0.01);
@@ -604,6 +630,64 @@ function renderClosedStamp(closing, live) {
   `;
 }
 
+async function downloadDayPDF(dayKey, dayData) {
+  if (!dayData) return;
+  if (typeof html2canvas === "undefined" || !window.jspdf) {
+    alert("تعذر تحميل أدوات إنشاء الـ PDF. تأكد من اتصالك بالإنترنت وحاول تاني.");
+    return;
+  }
+  const btn = document.getElementById("pdf-download-btn");
+  const btnOriginal = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = `${icon("loader-2",{size:16,color:"currentColor",style:"animation:spin 1s linear infinite;"})} جاري التجهيز...`; }
+
+  try {
+    const live = computeLive(dayData);
+    const profitTotal = (dayData.transactions || []).reduce((a,t)=>a+num(t.profit), 0);
+    const txs = [...(dayData.transactions || [])].reverse();
+
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:fixed; top:0; left:-99999px; width:760px; background:#ffffff; padding:28px; font-family:'Tajawal',sans-serif; direction:rtl; color:#17262b;";
+    wrap.innerHTML = `
+      <div style="font-family:'Cairo',sans-serif; font-weight:800; font-size:20px; margin-bottom:4px;">دفتر المحل — تقرير يوم</div>
+      <div style="font-size:13px; color:#5a6b70; margin-bottom:18px;">${displayDate(dayKey)}${dayData.closedAt ? " · اتقفل الساعة " + dayData.closedAt : ""}</div>
+      <div style="font-size:14.5px; font-weight:700; margin-bottom:16px;">مكسب اليوم: <span class="num" style="font-family:'JetBrains Mono',monospace;">${money(profitTotal)}</span> ج.م</div>
+      ${dayData.status === "closed" && dayData.closing ? renderClosedStamp(dayData.closing, live) : ""}
+      ${renderBalancesGrid(live)}
+      <div class="section-title">المعاملات (${txs.length})</div>
+      <div class="tx-list-box ${txs.length ? '' : 'empty'}">
+        ${txs.length === 0 ? '<div class="tx-list-empty">لا توجد معاملات</div>' : txs.map(t => renderTxRow(t, false)).join("")}
+      </div>
+    `;
+    document.body.appendChild(wrap);
+
+    const canvas = await html2canvas(wrap, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
+    document.body.removeChild(wrap);
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF("p", "mm", "a4");
+    const pageWidth = 210, pageHeight = 297;
+    const imgWidth = pageWidth;
+    const imgHeight = canvas.height * imgWidth / canvas.width;
+    const imgData = canvas.toDataURL("image/png");
+    let heightLeft = imgHeight;
+    let position = 0;
+    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+    pdf.save(`تقرير-${dayKey}.pdf`);
+  } catch (e) {
+    console.error(e);
+    alert("حصل خطأ أثناء إنشاء الـ PDF.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = btnOriginal; }
+  }
+}
+
 function confirmDeleteTx(id) {
   if (confirm("تأكيد حذف المعاملة؟")) {
     state.dayData = { ...state.dayData, transactions: state.dayData.transactions.filter(t => t.id !== id) };
@@ -616,6 +700,23 @@ function attachTodayEvents() { /* using inline onclick handlers, nothing extra n
 
 /* ---------------- Start Day Sheet ---------------- */
 function openStartSheet() { state.sheet = "start"; render(); }
+
+function confirmStartNewDay() {
+  if (state.dayData.status === "not_started") {
+    openStartSheet();
+    return;
+  }
+  const msg = state.dayData.status === "closed"
+    ? "هيتم مسح بيانات اليوم الحالي (المقفول) وهتقدر تبدأ يوم جديد من الأول بأرصدة جديدة. متأكد؟"
+    : "اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي (المعاملات والأرصدة). متأكد إنك عايز تبدأ من الأول؟";
+  if (confirm(msg)) {
+    state.dayData = emptyDay();
+    persistDay(state.today, state.dayData);
+    state.tab = "today";
+    state.sheet = null;
+    openStartSheet();
+  }
+}
 
 function renderStartSheet() {
   return `
@@ -636,10 +737,19 @@ function renderStartSheet() {
       <div class="field-label">رصيد انستاباي</div>
       <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-instapay">
     </div>
-    <div class="field">
-      <div class="field-label">درج شحن المكن</div>
-      <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine">
-    </div>
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">أرصدة مكن الشحن</div>
+    ${state.machines.length === 0 ? `
+      <div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة. تقدر تضيفها من تاب "الخدمات".</div>
+    ` : `
+      <div class="field-2col">
+        ${state.machines.map(m => `
+          <div class="field">
+            <div class="field-label">${esc(m.name)}</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}">
+          </div>
+        `).join("")}
+      </div>
+    `}
     <div class="field">
       <div class="field-label">رصيد حساب إسلام (لو فيه رصيد سابق)</div>
       <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-islam">
@@ -652,7 +762,10 @@ function submitStartDay() {
     drawer: num(document.getElementById("sd-drawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
     instapay: num(document.getElementById("sd-instapay").value),
-    machineDrawer: num(document.getElementById("sd-machine").value),
+    machines: Object.fromEntries(state.machines.map(m => {
+      const el = document.getElementById(`sd-machine-${m.id}`);
+      return [m.id, el ? num(el.value) : 0];
+    })),
     islamBalance: num(document.getElementById("sd-islam").value),
   };
   const nd = { ...emptyDay(), status: "open", opening };
@@ -662,6 +775,76 @@ function submitStartDay() {
     state.archiveIndex = [state.today, ...state.archiveIndex];
     setJSON("days-index", state.archiveIndex);
   }
+  state.sheet = null;
+  render();
+}
+
+/* ---------------- Edit Opening Balances Sheet ---------------- */
+function openEditOpeningSheet() {
+  if (state.dayData.status === "not_started") {
+    alert("لسه اليوم مبدأش. استخدم زرار «بدء اليوم» الأول عشان تسجّل الأرصدة الافتتاحية.");
+    return;
+  }
+  state.sheet = "editOpening";
+  render();
+}
+
+function renderEditOpeningSheet() {
+  const o = state.dayData.opening || emptyOpening();
+  return `
+    <div class="warn-box" style="color:var(--ink-60); background:var(--paper-2);">
+      تعديل الأرصدة الافتتاحية هيأثر على كل الأرصدة الحالية والفروقات المحسوبة النهاردة، لأن كل المعاملات بتتحسب فوق الرصيد ده.
+    </div>
+    <div class="field">
+      <div class="field-label">الدرج (كاش)</div>
+      <input type="number" inputmode="decimal" class="input" value="${o.drawer || ''}" id="eo-drawer">
+    </div>
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
+    <div class="field-2col">
+      ${WALLET_IDS.map(id => `
+        <div class="field">
+          <div class="field-label">${esc(state.walletNames[id])}</div>
+          <input type="number" inputmode="decimal" class="input" value="${o.wallets?.[id] || ''}" id="eo-wallet-${id}">
+        </div>
+      `).join("")}
+    </div>
+    <div class="field">
+      <div class="field-label">رصيد انستاباي</div>
+      <input type="number" inputmode="decimal" class="input" value="${o.instapay || ''}" id="eo-instapay">
+    </div>
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">أرصدة مكن الشحن</div>
+    ${state.machines.length === 0 ? `
+      <div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>
+    ` : `
+      <div class="field-2col">
+        ${state.machines.map(m => `
+          <div class="field">
+            <div class="field-label">${esc(m.name)}</div>
+            <input type="number" inputmode="decimal" class="input" value="${o.machines?.[m.id] || ''}" id="eo-machine-${m.id}">
+          </div>
+        `).join("")}
+      </div>
+    `}
+    <div class="field">
+      <div class="field-label">رصيد حساب إسلام</div>
+      <input type="number" inputmode="decimal" class="input" value="${o.islamBalance || ''}" id="eo-islam">
+    </div>
+  `;
+}
+
+function submitEditOpening() {
+  const opening = {
+    drawer: num(document.getElementById("eo-drawer").value),
+    wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`eo-wallet-${id}`).value)])),
+    instapay: num(document.getElementById("eo-instapay").value),
+    machines: Object.fromEntries(state.machines.map(m => {
+      const el = document.getElementById(`eo-machine-${m.id}`);
+      return [m.id, el ? num(el.value) : num(state.dayData.opening?.machines?.[m.id])];
+    })),
+    islamBalance: num(document.getElementById("eo-islam").value),
+  };
+  state.dayData = { ...state.dayData, opening };
+  persistDay(state.today, state.dayData);
   state.sheet = null;
   render();
 }
@@ -855,7 +1038,7 @@ function closeRowInputChanged(kind, id) {
   if (kind === "drawer") { expected = live.drawer; inputId = "cd-drawer"; diffId = "cd-diff-drawer"; }
   else if (kind === "wallet") { expected = live.wallets[id]; inputId = `cd-wallet-${id}`; diffId = `cd-diff-wallet-${id}`; }
   else if (kind === "instapay") { expected = live.instapay; inputId = "cd-instapay"; diffId = "cd-diff-instapay"; }
-  else if (kind === "machine") { expected = live.machineDrawer; inputId = "cd-machine"; diffId = "cd-diff-machine"; }
+  else if (kind === "machine") { expected = num(live.machines?.[id]); inputId = `cd-machine-${id}`; diffId = `cd-diff-machine-${id}`; }
   else if (kind === "islam") { expected = live.islamBalance; inputId = "cd-islam"; diffId = "cd-diff-islam"; }
   const val = document.getElementById(inputId).value;
   const diffEl = document.getElementById(diffId);
@@ -878,13 +1061,27 @@ function renderCloseSheetBody() {
       <div id="${diffId}" style="margin-top:6px;font-size:12.5px;"></div>
     </div>
   `;
-  let html = `<div class="close-intro">اكتب اللي معاك فعليًا وهنقارنه بالمتوقع تلقائيًا</div>`;
+  const txs = [...(state.dayData.transactions || [])].reverse();
+  let html = `
+    <div class="tx-list-header">
+      <div class="tx-list-title">معاملات اليوم (${txs.length})</div>
+      <button id="pdf-download-btn" style="display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:10px; border:1.5px solid var(--ink-15); background:#fff; font-size:12.5px; font-weight:700; color:var(--ink);" onclick="downloadDayPDF(state.today, state.dayData)">
+        ${icon("download",{size:14})} تحميل PDF
+      </button>
+    </div>
+    <div class="tx-list-box ${txs.length ? '' : 'empty'}" style="margin-bottom:18px;">
+      ${txs.length === 0 ? `<div class="tx-list-empty">لا توجد معاملات</div>` : txs.map(t => renderTxRow(t, false)).join("")}
+    </div>
+    <div class="close-intro">اكتب اللي معاك فعليًا وهنقارنه بالمتوقع تلقائيًا</div>
+  `;
   html += row("الدرج (كاش)", live.drawer, "cd-drawer", "cd-diff-drawer", "closeRowInputChanged('drawer')");
   WALLET_IDS.forEach(id => {
     html += row(state.walletNames[id], live.wallets[id], `cd-wallet-${id}`, `cd-diff-wallet-${id}`, `closeRowInputChanged('wallet','${id}')`);
   });
   html += row("رصيد انستاباي", live.instapay, "cd-instapay", "cd-diff-instapay", "closeRowInputChanged('instapay')");
-  html += row("درج شحن المكن", live.machineDrawer, "cd-machine", "cd-diff-machine", "closeRowInputChanged('machine')");
+  state.machines.forEach(m => {
+    html += row(m.name, num(live.machines?.[m.id]), `cd-machine-${m.id}`, `cd-diff-machine-${m.id}`, `closeRowInputChanged('machine','${m.id}')`);
+  });
   html += row("حساب إسلام", live.islamBalance, "cd-islam", "cd-diff-islam", "closeRowInputChanged('islam')");
   return html;
 }
@@ -894,7 +1091,10 @@ function submitCloseDay() {
     drawer: num(document.getElementById("cd-drawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`cd-wallet-${id}`).value)])),
     instapay: num(document.getElementById("cd-instapay").value),
-    machineDrawer: num(document.getElementById("cd-machine").value),
+    machines: Object.fromEntries(state.machines.map(m => {
+      const el = document.getElementById(`cd-machine-${m.id}`);
+      return [m.id, el ? num(el.value) : 0];
+    })),
     islamBalance: num(document.getElementById("cd-islam").value),
   };
   state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow() };
@@ -950,6 +1150,10 @@ function renderSheet() {
     title = "إضافة مكينة شحن";
     body = renderAddMachineSheetBody();
     footer = `<button class="primary-btn" id="am-submit-btn" onclick="submitAddMachine()" disabled>إضافة</button>`;
+  } else if (state.sheet === "editOpening") {
+    title = "تعديل الأرصدة الافتتاحية";
+    body = renderEditOpeningSheet();
+    footer = `<button class="primary-btn" onclick="submitEditOpening()">حفظ التعديل</button>`;
   }
 
   return `
@@ -1016,6 +1220,11 @@ function renderArchiveDetail() {
     <div class="archive-detail-title">${displayDate(state.viewDate)}</div>
     <div class="archive-detail-sub">مكسب اليوم: <span class="num" style="font-weight:700;">${money(profitTotal)}</span> ج.م · ${d.transactions.length} معاملة</div>
     ${d.status === "closed" && d.closing ? renderClosedStamp(d.closing, live) : ""}
+    ${d.status === "closed" ? `
+      <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:16px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.viewDate, state.archiveDayData)">
+        ${icon("download",{size:16})} تحميل PDF
+      </button>
+    ` : ""}
     ${renderBalancesGrid(live)}
     <div class="section-title">المعاملات</div>
     <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
@@ -1030,6 +1239,20 @@ function backToArchiveList() { state.viewDate = null; state.archiveDayData = nul
 /* ---------------- Services ---------------- */
 function renderServicesView() {
   let html = `
+    <div class="archive-title">إدارة اليوم</div>
+    <div class="services-list" style="margin-bottom:20px;">
+      <div class="services-row" style="cursor:pointer;" onclick="openEditOpeningSheet()">
+        ${icon("pencil",{size:16,color:"var(--ink-60)"})}
+        <div class="services-row-name">تعديل الأرصدة الافتتاحية لليوم</div>
+        ${icon("chevron-left",{size:15,color:"var(--ink-40)"})}
+      </div>
+      <div class="services-row" style="cursor:pointer;" onclick="confirmStartNewDay()">
+        ${icon("log-out",{size:16,color:"var(--rust)"})}
+        <div class="services-row-name" style="color:var(--rust);">بدء يوم جديد (إعادة تعيين)</div>
+        ${icon("chevron-left",{size:15,color:"var(--ink-40)"})}
+      </div>
+    </div>
+
     <div class="archive-title">المحافظ الإلكترونية</div>
     <div class="services-list">
       ${WALLET_IDS.map(id => `
