@@ -381,12 +381,12 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&am
 /* ---------------- domain model ---------------- */
 const WALLET_IDS = ["w1","w2","w3","w4"];
 const WALLET_LIMIT_TOTAL = 200000;
-const emptyOpening = () => ({ drawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machines: {}, islamBalance: 0 });
+const emptyOpening = () => ({ drawer: 0, machineDrawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machines: {}, islamBalance: 0 });
 const emptyDay = () => ({ status: "not_started", opening: emptyOpening(), transactions: [], closing: null, closedAt: null });
 
 function computeLive(dayData){
   const o = dayData.opening || emptyOpening();
-  let drawer = o.drawer, instapay = o.instapay, islamBalance = o.islamBalance || 0;
+  let drawer = o.drawer, machineDrawer = o.machineDrawer || 0, instapay = o.instapay, islamBalance = o.islamBalance || 0;
   const wallets = { ...o.wallets };
   const machines = { ...(o.machines || {}) };
   (dayData.transactions || []).forEach(t => {
@@ -403,14 +403,15 @@ function computeLive(dayData){
       if (t.subtype === "سحب") { drawer += (-amt + p); islamBalance += amt; }
       if (t.subtype === "إيداع") { drawer += (amt + p); islamBalance -= amt; }
     } else if (t.category === "machine") {
-      drawer += (amt + p);
+      // فلوس شحن المكن بتدخل في درج المكن المنفصل، مش درج الكاش
+      machineDrawer += (amt + p);
       machines[t.machineId] = (machines[t.machineId] || 0) - amt;
     } else if (t.category === "expense") {
       // خوارج: مبلغ خرج من الدرج لجهة تانية (مندوب، صاحب المكان، إلخ)
       drawer -= amt;
     }
   });
-  return { drawer, wallets, instapay, machines, islamBalance };
+  return { drawer, machineDrawer, wallets, instapay, machines, islamBalance };
 }
 
 /* ---------------- global state ---------------- */
@@ -885,8 +886,9 @@ function renderBalancesGrid(live) {
     <div class="balance-grid-wrap">
       ${sectionHeader("main", "الأرصدة", eyeBtn)}
       ${c.main ? `<div class="balance-collapsed-hint">الأرصدة مخفية</div>` : `
-        <div style="margin-bottom:8px;">
+        <div class="balance-row-flex" style="margin-bottom:8px;">
           ${balanceCard("banknote", "الدرج (كاش)", live.drawer)}
+          ${balanceCard("landmark", "الدرج (مكن)", live.machineDrawer)}
         </div>
         <div class="balance-row-flex" style="margin-bottom:8px;">
           ${balanceCard("wallet", "رصيد انستاباي", live.instapay)}
@@ -1048,6 +1050,7 @@ function renderClosedStamp(closing, live) {
   const machineIds = Array.from(new Set([...Object.keys(closing.machines || {}), ...Object.keys(live.machines || {})]));
   const diffs = [
     num(closing.drawer) - live.drawer,
+    num(closing.machineDrawer) - live.machineDrawer,
     ...WALLET_IDS.map(id => num(closing.wallets?.[id]) - live.wallets[id]),
     num(closing.instapay) - live.instapay,
     ...machineIds.map(id => num(closing.machines?.[id]) - num(live.machines?.[id])),
@@ -1165,9 +1168,15 @@ function confirmStartNewDay() {
 
 function renderStartSheet() {
   return `
-    <div class="field">
-      <div class="field-label">الدرج (كاش)</div>
-      <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-drawer">
+    <div class="field-row">
+      <div class="field">
+        <div class="field-label">الدرج (كاش)</div>
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-drawer">
+      </div>
+      <div class="field">
+        <div class="field-label">الدرج (مكن)</div>
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machineDrawer">
+      </div>
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
     <div class="field-2col">
@@ -1208,6 +1217,7 @@ function submitStartDay() {
   }
   const opening = {
     drawer: num(document.getElementById("sd-drawer").value),
+    machineDrawer: num(document.getElementById("sd-machineDrawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
     instapay: num(document.getElementById("sd-instapay").value),
     machines: Object.fromEntries(state.machines.map(m => {
@@ -1239,9 +1249,15 @@ function renderEditOpeningSheet() {
     <div class="warn-box" style="color:var(--ink-60); background:var(--paper-2);">
       تعديل الأرصدة الافتتاحية هيأثر على كل الأرصدة الحالية والفروقات المحسوبة النهاردة، لأن كل المعاملات بتتحسب فوق الرصيد ده.
     </div>
-    <div class="field">
-      <div class="field-label">الدرج (كاش)</div>
-      <input type="number" inputmode="decimal" class="input" value="${o.drawer || ''}" id="eo-drawer">
+    <div class="field-row">
+      <div class="field">
+        <div class="field-label">الدرج (كاش)</div>
+        <input type="number" inputmode="decimal" class="input" value="${o.drawer || ''}" id="eo-drawer">
+      </div>
+      <div class="field">
+        <div class="field-label">الدرج (مكن)</div>
+        <input type="number" inputmode="decimal" class="input" value="${o.machineDrawer || ''}" id="eo-machineDrawer">
+      </div>
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
     <div class="field-2col">
@@ -1279,6 +1295,7 @@ function renderEditOpeningSheet() {
 function submitEditOpening() {
   const opening = {
     drawer: num(document.getElementById("eo-drawer").value),
+    machineDrawer: num(document.getElementById("eo-machineDrawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`eo-wallet-${id}`).value)])),
     instapay: num(document.getElementById("eo-instapay").value),
     machines: Object.fromEntries(state.machines.map(m => {
@@ -1507,6 +1524,7 @@ function closeRowInputChanged(kind, id) {
   const live = computeLive(state.dayData);
   let expected, inputId, diffId;
   if (kind === "drawer") { expected = live.drawer; inputId = "cd-drawer"; diffId = "cd-diff-drawer"; }
+  else if (kind === "machineDrawer") { expected = live.machineDrawer; inputId = "cd-machineDrawer"; diffId = "cd-diff-machineDrawer"; }
   else if (kind === "wallet") { expected = live.wallets[id]; inputId = `cd-wallet-${id}`; diffId = `cd-diff-wallet-${id}`; }
   else if (kind === "instapay") { expected = live.instapay; inputId = "cd-instapay"; diffId = "cd-diff-instapay"; }
   else if (kind === "machine") { expected = num(live.machines?.[id]); inputId = `cd-machine-${id}`; diffId = `cd-diff-machine-${id}`; }
@@ -1546,6 +1564,7 @@ function renderCloseSheetBody() {
     <div class="close-intro">اكتب اللي معاك فعليًا وهنقارنه بالمتوقع تلقائيًا</div>
   `;
   html += row("الدرج (كاش)", live.drawer, "cd-drawer", "cd-diff-drawer", "closeRowInputChanged('drawer')");
+  html += row("الدرج (مكن)", live.machineDrawer, "cd-machineDrawer", "cd-diff-machineDrawer", "closeRowInputChanged('machineDrawer')");
   WALLET_IDS.forEach(id => {
     html += row(state.walletNames[id], live.wallets[id], `cd-wallet-${id}`, `cd-diff-wallet-${id}`, `closeRowInputChanged('wallet','${id}')`);
   });
@@ -1560,6 +1579,7 @@ function renderCloseSheetBody() {
 function submitCloseDay() {
   const closing = {
     drawer: num(document.getElementById("cd-drawer").value),
+    machineDrawer: num(document.getElementById("cd-machineDrawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`cd-wallet-${id}`).value)])),
     instapay: num(document.getElementById("cd-instapay").value),
     machines: Object.fromEntries(state.machines.map(m => {
