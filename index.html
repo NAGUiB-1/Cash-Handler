@@ -381,6 +381,14 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&am
 /* ---------------- domain model ---------------- */
 const WALLET_IDS = ["w1","w2","w3","w4"];
 const WALLET_LIMIT_TOTAL = 200000;
+const FAWRY_SUBS = ["مدفوعات", "خدمات موبايل", "فيزا"];
+const FAWRY_NO_NEGATIVE_EXEMPT = "مدفوعات"; // the only item allowed to go negative
+function machineSubs(m) { return (m && m.name === "فوري") ? FAWRY_SUBS : null; }
+function emptyFawryBalance() { return { "مدفوعات": 0, "خدمات موبايل": 0, "فيزا": 0 }; }
+function machineBalValue(bal, sub) {
+  if (sub) return num(bal && typeof bal === "object" ? bal[sub] : 0);
+  return num(bal);
+}
 const emptyOpening = () => ({ drawer: 0, machineDrawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machines: {}, islamBalance: 0 });
 const emptyDay = () => ({ status: "not_started", opening: emptyOpening(), transactions: [], closing: null, closedAt: null });
 
@@ -403,9 +411,26 @@ function computeLive(dayData){
       if (t.subtype === "سحب") { drawer += (-amt + p); islamBalance += amt; }
       if (t.subtype === "إيداع") { drawer += (amt + p); islamBalance -= amt; }
     } else if (t.category === "machine") {
-      // فلوس شحن المكن بتدخل في درج المكن المنفصل، مش درج الكاش
-      machineDrawer += (amt + p);
-      machines[t.machineId] = (machines[t.machineId] || 0) - amt;
+      const sub = t.machineSub;
+      if (sub === "فيزا") {
+        // فيزا: بتتخصم من درج الكاش، وبيتضاف رصيدها، والنسبة بتضاف لدرج الكاش (زي سحب فودافون)
+        drawer += (-amt + p);
+        const cur = machines[t.machineId];
+        const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+        obj["فيزا"] = (obj["فيزا"] || 0) + amt;
+        machines[t.machineId] = obj;
+      } else if (sub) {
+        // مدفوعات / خدمات موبايل: بتدخل درج المكن زي أي شحن عادي
+        machineDrawer += (amt + p);
+        const cur = machines[t.machineId];
+        const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+        obj[sub] = (obj[sub] || 0) - amt;
+        machines[t.machineId] = obj;
+      } else {
+        // فلوس شحن المكن بتدخل في درج المكن المنفصل، مش درج الكاش
+        machineDrawer += (amt + p);
+        machines[t.machineId] = (machines[t.machineId] || 0) - amt;
+      }
     } else if (t.category === "expense") {
       // خوارج: مبلغ خرج من الدرج لجهة تانية (مندوب، صاحب المكان، إلخ)
       drawer -= amt;
@@ -907,7 +932,11 @@ function renderBalancesGrid(live) {
         ${sectionHeader("machines", "أرصدة مكن الشحن")}
         ${c.machines ? `<div class="balance-collapsed-hint">مكن الشحن مخفية</div>` : `
           <div class="balance-row2" style="margin-bottom:8px;">
-            ${state.machines.map(m => balanceCard("landmark", m.name, num(live.machines[m.id]))).join("")}
+            ${state.machines.map(m => {
+              const subs = machineSubs(m);
+              if (subs) return subs.map(s => balanceCard("landmark", `${m.name} - ${s}`, machineBalValue(live.machines[m.id], s))).join("");
+              return balanceCard("landmark", m.name, machineBalValue(live.machines[m.id]));
+            }).join("")}
           </div>
         `}
       ` : ""}
@@ -1019,9 +1048,13 @@ function renderTxRow(tx, editable) {
     iconName = "log-out"; color = "var(--rust)";
     title = `خوارج · ${esc(tx.destination || "—")}`;
   } else {
-    iconName = "zap"; color = "var(--gold)";
     const m = state.machines.find(m=>m.id===tx.machineId);
-    title = `شحن مكن · ${esc(m ? m.name : "—")}`;
+    if (tx.machineSub === "فيزا") {
+      iconName = "arrow-up-circle"; color = "var(--steel)";
+    } else {
+      iconName = "zap"; color = "var(--gold)";
+    }
+    title = `شحن مكن · ${esc(m ? m.name : "—")}${tx.machineSub ? " · " + esc(tx.machineSub) : ""}`;
   }
   return `
     <div class="tx-row">
@@ -1047,13 +1080,17 @@ function renderTxRow(tx, editable) {
 }
 
 function renderClosedStamp(closing, live) {
-  const machineIds = Array.from(new Set([...Object.keys(closing.machines || {}), ...Object.keys(live.machines || {})]));
+  const machineDiffs = state.machines.map(m => {
+    const subs = machineSubs(m);
+    if (subs) return subs.map(s => machineBalValue(closing.machines?.[m.id], s) - machineBalValue(live.machines?.[m.id], s));
+    return [machineBalValue(closing.machines?.[m.id]) - machineBalValue(live.machines?.[m.id])];
+  }).flat();
   const diffs = [
     num(closing.drawer) - live.drawer,
     num(closing.machineDrawer) - live.machineDrawer,
     ...WALLET_IDS.map(id => num(closing.wallets?.[id]) - live.wallets[id]),
     num(closing.instapay) - live.instapay,
-    ...machineIds.map(id => num(closing.machines?.[id]) - num(live.machines?.[id])),
+    ...machineDiffs,
     num(closing.islamBalance) - live.islamBalance,
   ];
   const matched = diffs.every(d => Math.abs(d) < 0.01);
@@ -1196,12 +1233,21 @@ function renderStartSheet() {
       <div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة. تقدر تضيفها من تاب "الخدمات".</div>
     ` : `
       <div class="field-2col">
-        ${state.machines.map(m => `
+        ${state.machines.map(m => {
+          const subs = machineSubs(m);
+          if (subs) return subs.map(s => `
+            <div class="field">
+              <div class="field-label">${esc(m.name)} - ${s}</div>
+              <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}-${s}">
+            </div>
+          `).join("");
+          return `
           <div class="field">
             <div class="field-label">${esc(m.name)}</div>
             <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}">
           </div>
-        `).join("")}
+        `;
+        }).join("")}
       </div>
     `}
     <div class="field">
@@ -1221,6 +1267,12 @@ function submitStartDay() {
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
     instapay: num(document.getElementById("sd-instapay").value),
     machines: Object.fromEntries(state.machines.map(m => {
+      const subs = machineSubs(m);
+      if (subs) {
+        const obj = {};
+        subs.forEach(s => { const el = document.getElementById(`sd-machine-${m.id}-${s}`); obj[s] = el ? num(el.value) : 0; });
+        return [m.id, obj];
+      }
       const el = document.getElementById(`sd-machine-${m.id}`);
       return [m.id, el ? num(el.value) : 0];
     })),
@@ -1277,12 +1329,21 @@ function renderEditOpeningSheet() {
       <div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>
     ` : `
       <div class="field-2col">
-        ${state.machines.map(m => `
+        ${state.machines.map(m => {
+          const subs = machineSubs(m);
+          if (subs) return subs.map(s => `
+            <div class="field">
+              <div class="field-label">${esc(m.name)} - ${s}</div>
+              <input type="number" inputmode="decimal" class="input" value="${machineBalValue(o.machines?.[m.id], s) || ''}" id="eo-machine-${m.id}-${s}">
+            </div>
+          `).join("");
+          return `
           <div class="field">
             <div class="field-label">${esc(m.name)}</div>
             <input type="number" inputmode="decimal" class="input" value="${o.machines?.[m.id] || ''}" id="eo-machine-${m.id}">
           </div>
-        `).join("")}
+        `;
+        }).join("")}
       </div>
     `}
     <div class="field">
@@ -1299,6 +1360,15 @@ function submitEditOpening() {
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`eo-wallet-${id}`).value)])),
     instapay: num(document.getElementById("eo-instapay").value),
     machines: Object.fromEntries(state.machines.map(m => {
+      const subs = machineSubs(m);
+      if (subs) {
+        const obj = {};
+        subs.forEach(s => {
+          const el = document.getElementById(`eo-machine-${m.id}-${s}`);
+          obj[s] = el ? num(el.value) : machineBalValue(state.dayData.opening?.machines?.[m.id], s);
+        });
+        return [m.id, obj];
+      }
       const el = document.getElementById(`eo-machine-${m.id}`);
       return [m.id, el ? num(el.value) : num(state.dayData.opening?.machines?.[m.id])];
     })),
@@ -1320,6 +1390,7 @@ function openTxSheet(txId) {
     subtype: initial?.subtype || "سحب",
     walletId: initial?.walletId || "w1",
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
+    machineSub: initial?.machineSub || null,
     destination: initial?.destination ?? "",
     amount: initial?.amount ?? "",
     profit: initial?.profit ?? "",
@@ -1347,6 +1418,13 @@ function txSelectWallet(id) {
 function txSelectMachine(id) {
   syncTxFormFromInputs();
   state.txForm.machineId = id;
+  const m = state.machines.find(mm => mm.id === id);
+  state.txForm.machineSub = machineSubs(m) ? (state.txForm.machineSub && machineSubs(m).includes(state.txForm.machineSub) ? state.txForm.machineSub : null) : null;
+  refreshSheetOnly();
+}
+function txSelectMachineSub(sub) {
+  syncTxFormFromInputs();
+  state.txForm.machineSub = sub;
   refreshSheetOnly();
 }
 function syncTxFormFromInputs() {
@@ -1420,6 +1498,23 @@ function renderTxSheetBody() {
           </div>
         </div>
       `;
+      const selMachine = state.machines.find(m => m.id === f.machineId);
+      const subs = machineSubs(selMachine);
+      if (subs) {
+        html += `
+          <div class="field">
+            <div class="field-label">البند</div>
+            <div class="chip-row wrap">
+              ${subs.map(s => `
+                <button class="chip-btn small ${f.machineSub===s?'active':''}" onclick="txSelectMachineSub('${s}')">${s}</button>
+              `).join("")}
+            </div>
+          </div>
+        `;
+        if (f.machineSub === "فيزا") {
+          html += `<div class="warn-box" style="color:var(--ink-60); background:var(--paper-2);">فيزا: هيتخصم المبلغ من الدرج (كاش) ويتضاف لرصيد الفيزا، والنسبة هتتضاف لدرج الكاش.</div>`;
+        }
+      }
     }
   }
 
@@ -1480,12 +1575,34 @@ function applyLimitDelta(oldTx, newTx) {
   saveWalletLimits(limits);
 }
 
+function validateMachineBalances(newTxs) {
+  // مفيش رصيد يسلب في أي مكينة (أو أي بند فرعي فيها) غير بند "مدفوعات" في فوري
+  const live = computeLive({ ...state.dayData, transactions: newTxs });
+  for (const m of state.machines) {
+    const subs = machineSubs(m);
+    if (subs) {
+      for (const s of subs) {
+        if (s === FAWRY_NO_NEGATIVE_EXEMPT) continue;
+        const val = machineBalValue(live.machines[m.id], s);
+        if (val < -0.005) return false;
+      }
+    } else {
+      const val = machineBalValue(live.machines[m.id]);
+      if (val < -0.005) return false;
+    }
+  }
+  return true;
+}
+
 function submitTx() {
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
   if (!(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول من تاب \"الخدمات\" قبل ما تسجل معاملة شحن."); return; }
+  const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
+  const selSubs = selMachine ? machineSubs(selMachine) : null;
+  if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
   if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص اللي المبلغ خرج له."); return; }
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
   const tx = {
@@ -1493,6 +1610,7 @@ function submitTx() {
     subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : f.subtype),
     walletId: f.category === "vodafone" ? f.walletId : undefined,
     machineId: f.category === "machine" ? f.machineId : undefined,
+    machineSub: (f.category === "machine" && selSubs) ? f.machineSub : undefined,
     destination: f.category === "expense" ? destTrimmed : undefined,
     amount: num(f.amount),
     profit: f.category === "expense" ? 0 : (num(f.profit) || 0),
@@ -1502,6 +1620,10 @@ function submitTx() {
   let txs;
   if (tx.id) txs = state.dayData.transactions.map(t => t.id === tx.id ? { ...tx } : t);
   else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: timeNow() }];
+  if (tx.category === "machine" && !validateMachineBalances(txs)) {
+    alert("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح، برجاء تعديل الرصيد والمحاولة مرة أخرى");
+    return;
+  }
   state.dayData = { ...state.dayData, transactions: txs };
   try {
     persistDay(state.today, state.dayData);
@@ -1520,7 +1642,7 @@ function submitTx() {
 /* ---------------- Close Day Sheet ---------------- */
 function openCloseSheet() { state.sheet = "close"; render(); }
 
-function closeRowInputChanged(kind, id) {
+function closeRowInputChanged(kind, id, sub) {
   const live = computeLive(state.dayData);
   let expected, inputId, diffId;
   if (kind === "drawer") { expected = live.drawer; inputId = "cd-drawer"; diffId = "cd-diff-drawer"; }
@@ -1528,6 +1650,7 @@ function closeRowInputChanged(kind, id) {
   else if (kind === "wallet") { expected = live.wallets[id]; inputId = `cd-wallet-${id}`; diffId = `cd-diff-wallet-${id}`; }
   else if (kind === "instapay") { expected = live.instapay; inputId = "cd-instapay"; diffId = "cd-diff-instapay"; }
   else if (kind === "machine") { expected = num(live.machines?.[id]); inputId = `cd-machine-${id}`; diffId = `cd-diff-machine-${id}`; }
+  else if (kind === "machineSub") { expected = machineBalValue(live.machines?.[id], sub); inputId = `cd-machine-${id}-${sub}`; diffId = `cd-diff-machine-${id}-${sub}`; }
   else if (kind === "islam") { expected = live.islamBalance; inputId = "cd-islam"; diffId = "cd-diff-islam"; }
   const val = document.getElementById(inputId).value;
   const diffEl = document.getElementById(diffId);
@@ -1570,7 +1693,14 @@ function renderCloseSheetBody() {
   });
   html += row("رصيد انستاباي", live.instapay, "cd-instapay", "cd-diff-instapay", "closeRowInputChanged('instapay')");
   state.machines.forEach(m => {
-    html += row(m.name, num(live.machines?.[m.id]), `cd-machine-${m.id}`, `cd-diff-machine-${m.id}`, `closeRowInputChanged('machine','${m.id}')`);
+    const subs = machineSubs(m);
+    if (subs) {
+      subs.forEach(s => {
+        html += row(`${m.name} - ${s}`, machineBalValue(live.machines?.[m.id], s), `cd-machine-${m.id}-${s}`, `cd-diff-machine-${m.id}-${s}`, `closeRowInputChanged('machineSub','${m.id}','${s}')`);
+      });
+    } else {
+      html += row(m.name, num(live.machines?.[m.id]), `cd-machine-${m.id}`, `cd-diff-machine-${m.id}`, `closeRowInputChanged('machine','${m.id}')`);
+    }
   });
   html += row("حساب إسلام", live.islamBalance, "cd-islam", "cd-diff-islam", "closeRowInputChanged('islam')");
   return html;
@@ -1583,6 +1713,12 @@ function submitCloseDay() {
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`cd-wallet-${id}`).value)])),
     instapay: num(document.getElementById("cd-instapay").value),
     machines: Object.fromEntries(state.machines.map(m => {
+      const subs = machineSubs(m);
+      if (subs) {
+        const obj = {};
+        subs.forEach(s => { const el = document.getElementById(`cd-machine-${m.id}-${s}`); obj[s] = el ? num(el.value) : 0; });
+        return [m.id, obj];
+      }
       const el = document.getElementById(`cd-machine-${m.id}`);
       return [m.id, el ? num(el.value) : 0];
     })),
