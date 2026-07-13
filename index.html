@@ -75,9 +75,7 @@
   /* Balance cards */
   .balance-grid-wrap { margin-bottom: 16px; }
   .balance-section-label { font-size: 12px; font-weight: 700; color: var(--ink-60); margin: 10px 2px 6px; }
-  .balances-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
-  .balances-toolbar-title { font-size: 12px; font-weight: 700; color: var(--ink-60); }
-  .balances-toolbar-actions { display: flex; gap: 6px; }
+  .balance-section-header { display: flex; align-items: center; justify-content: space-between; margin: 10px 2px 6px; }
   .toolbar-btn {
     background: #fff; border: 1px solid var(--ink-10); border-radius: 10px; padding: 7px;
     display: flex; align-items: center; justify-content: center;
@@ -87,6 +85,7 @@
     font-size: 12px; color: var(--ink-40); background: #fff; border: 1px dashed var(--ink-15);
     border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 8px;
   }
+  .balance-card-limit { font-size: 10.5px; font-weight: 600; margin-top: 4px; }
   .balance-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .balance-row-flex { display: flex; gap: 8px; }
   .balance-card {
@@ -328,6 +327,11 @@ function saveWalletNames(names) {
   db.collection("meta").doc("walletNames").set(names)
     .catch(err => reportSaveError("فشل حفظ أسماء المحافظ: " + (err.message || err.code)));
 }
+function saveWalletLimits(limits) {
+  if (!db) return;
+  db.collection("meta").doc("walletLimits").set(limits)
+    .catch(err => reportSaveError("فشل حفظ حدود المحافظ (الليميت): " + (err.message || err.code)));
+}
 function persistDay(key, data) {
   if (!db) return;
   db.collection("days").doc(key).set(data)
@@ -376,6 +380,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&am
 
 /* ---------------- domain model ---------------- */
 const WALLET_IDS = ["w1","w2","w3","w4"];
+const WALLET_LIMIT_TOTAL = 200000;
 const emptyOpening = () => ({ drawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machines: {}, islamBalance: 0 });
 const emptyDay = () => ({ status: "not_started", opening: emptyOpening(), transactions: [], closing: null, closedAt: null });
 
@@ -421,11 +426,13 @@ const state = {
   sheet: null,        // 'start' | 'tx' | 'close' | 'addMachine' | null
   txForm: null,
   editingWalletId: null,
+  editingWalletLimitId: null,
   busy: false,
   ready: false,
   connectionError: null,
   machinesReady: false,
   walletNamesReady: false,
+  walletLimitsReady: false,
   dayReady: false,
   fbReady: false,
   authUser: null,
@@ -436,12 +443,14 @@ const state = {
   loginSubmitting: false,
   saveError: null,
   balancesHidden: false,
-  walletsCollapsed: false,
+  collapsedSections: { main: false, wallets: false, machines: false },
+  walletLimits: { w1: 0, w2: 0, w3: 0, w4: 0 },
 };
 
 try {
   state.balancesHidden = localStorage.getItem("cashapp_balancesHidden") === "1";
-  state.walletsCollapsed = localStorage.getItem("cashapp_walletsCollapsed") === "1";
+  const savedSections = JSON.parse(localStorage.getItem("cashapp_collapsedSections") || "null");
+  if (savedSections) state.collapsedSections = { ...state.collapsedSections, ...savedSections };
 } catch (e) { /* localStorage unavailable, just use defaults */ }
 
 function toggleBalancesHidden() {
@@ -449,9 +458,9 @@ function toggleBalancesHidden() {
   try { localStorage.setItem("cashapp_balancesHidden", state.balancesHidden ? "1" : "0"); } catch (e) {}
   render();
 }
-function toggleWalletsCollapsed() {
-  state.walletsCollapsed = !state.walletsCollapsed;
-  try { localStorage.setItem("cashapp_walletsCollapsed", state.walletsCollapsed ? "1" : "0"); } catch (e) {}
+function toggleSection(key) {
+  state.collapsedSections = { ...state.collapsedSections, [key]: !state.collapsedSections[key] };
+  try { localStorage.setItem("cashapp_collapsedSections", JSON.stringify(state.collapsedSections)); } catch (e) {}
   render();
 }
 
@@ -463,6 +472,7 @@ function attachRealtimeListeners() {
   state.unsubscribers = [];
   attachMachinesListener(0);
   attachWalletNamesListener(0);
+  attachWalletLimitsListener(0);
   attachDayListener(0);
 }
 
@@ -511,6 +521,24 @@ function attachWalletNamesListener(retryCount) {
   }, err => {
     console.error("walletNames listener error (retry " + retryCount + ")", err);
     scheduleRetry(retryCount, () => attachWalletNamesListener(retryCount + 1));
+  });
+  state.unsubscribers.push(unsub);
+}
+
+function attachWalletLimitsListener(retryCount) {
+  const unsub = db.collection("meta").doc("walletLimits").onSnapshot(snap => {
+    if (snap.exists) {
+      state.walletLimits = { w1:0, w2:0, w3:0, w4:0, ...snap.data() };
+    } else if (!state.walletLimitsReady) {
+      const defaults = { w1:0, w2:0, w3:0, w4:0 };
+      state.walletLimits = defaults;
+      saveWalletLimits(defaults);
+    }
+    state.walletLimitsReady = true;
+    render();
+  }, err => {
+    console.error("walletLimits listener error (retry " + retryCount + ")", err);
+    scheduleRetry(retryCount, () => attachWalletLimitsListener(retryCount + 1));
   });
   state.unsubscribers.push(unsub);
 }
@@ -830,47 +858,70 @@ function setTab(t) {
 }
 
 /* ---------------- Today view ---------------- */
-function renderBalancesGrid(live) {
+function sectionHeader(key, label, extraRight) {
+  const collapsed = !!state.collapsedSections[key];
   return `
-    <div class="balance-grid-wrap">
-      <div class="balances-toolbar">
-        <div class="balances-toolbar-title">الأرصدة</div>
-        <div class="balances-toolbar-actions">
-          <button class="toolbar-btn" title="${state.balancesHidden ? 'إظهار الأرصدة' : 'إخفاء الأرصدة'}" onclick="toggleBalancesHidden()">
-            ${icon(state.balancesHidden ? "eye-off" : "eye", {size:16, color:"var(--ink-60)"})}
-          </button>
-          <button class="toolbar-btn" title="${state.walletsCollapsed ? 'عرض المحافظ' : 'إخفاء المحافظ'}" onclick="toggleWalletsCollapsed()">
-            ${icon(state.walletsCollapsed ? "chevron-down" : "chevron-up", {size:16, color:"var(--ink-60)"})}
-          </button>
-        </div>
+    <div class="balance-section-header">
+      <div class="balance-section-label" style="margin:0;">${label}</div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        ${extraRight || ""}
+        <button class="toolbar-btn" title="${collapsed ? 'عرض' : 'إخفاء'}" onclick="toggleSection('${key}')">
+          ${icon(collapsed ? "chevron-down" : "chevron-up", {size:15, color:"var(--ink-60)"})}
+        </button>
       </div>
-      <div style="margin-bottom:8px;">
-        ${balanceCard("banknote", "الدرج (كاش)", live.drawer)}
-      </div>
-      <div class="balance-section-label">المحافظ الإلكترونية</div>
-      ${state.walletsCollapsed ? `
-        <div class="balance-collapsed-hint">المحافظ مخفية · دوس على السهم فوق عشان تظهرها</div>
-      ` : `
-        <div class="balance-row2">
-          ${WALLET_IDS.map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id])).join("")}
-        </div>
-      `}
-      <div class="balance-row-flex" style="margin-bottom:8px;">
-        ${balanceCard("wallet", "رصيد انستاباي", live.instapay)}
-      </div>
-      ${state.machines.length ? `
-        <div class="balance-section-label">أرصدة مكن الشحن</div>
-        <div class="balance-row2" style="margin-bottom:8px;">
-          ${state.machines.map(m => balanceCard("landmark", m.name, num(live.machines[m.id]))).join("")}
-        </div>
-      ` : ""}
-      ${islamCard(live.islamBalance)}
     </div>
   `;
 }
-function balanceCard(iconName, label, value) {
+
+function renderBalancesGrid(live) {
+  const c = state.collapsedSections;
+  const eyeBtn = `
+    <button class="toolbar-btn" title="${state.balancesHidden ? 'إظهار الأرصدة' : 'إخفاء الأرصدة'}" onclick="toggleBalancesHidden()">
+      ${icon(state.balancesHidden ? "eye-off" : "eye", {size:15, color:"var(--ink-60)"})}
+    </button>
+  `;
+  return `
+    <div class="balance-grid-wrap">
+      ${sectionHeader("main", "الأرصدة", eyeBtn)}
+      ${c.main ? `<div class="balance-collapsed-hint">الأرصدة مخفية</div>` : `
+        <div style="margin-bottom:8px;">
+          ${balanceCard("banknote", "الدرج (كاش)", live.drawer)}
+        </div>
+        <div class="balance-row-flex" style="margin-bottom:8px;">
+          ${balanceCard("wallet", "رصيد انستاباي", live.instapay)}
+        </div>
+        ${islamCard(live.islamBalance)}
+      `}
+
+      ${sectionHeader("wallets", "المحافظ الإلكترونية")}
+      ${c.wallets ? `<div class="balance-collapsed-hint">المحافظ مخفية</div>` : `
+        <div class="balance-row2" style="margin-bottom:8px;">
+          ${WALLET_IDS.map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id], id)).join("")}
+        </div>
+      `}
+
+      ${state.machines.length ? `
+        ${sectionHeader("machines", "أرصدة مكن الشحن")}
+        ${c.machines ? `<div class="balance-collapsed-hint">مكن الشحن مخفية</div>` : `
+          <div class="balance-row2" style="margin-bottom:8px;">
+            ${state.machines.map(m => balanceCard("landmark", m.name, num(live.machines[m.id]))).join("")}
+          </div>
+        `}
+      ` : ""}
+    </div>
+  `;
+}
+function balanceCard(iconName, label, value, walletId) {
   const neg = value < 0;
   const display = state.balancesHidden ? "••••" : money(value);
+  let limitHtml = "";
+  if (walletId) {
+    const used = num(state.walletLimits[walletId]);
+    const remaining = WALLET_LIMIT_TOTAL - used;
+    const remColor = remaining < 0 ? "var(--rust)" : "var(--ink-40)";
+    const remDisplay = state.balancesHidden ? "••••" : money(remaining);
+    limitHtml = `<div class="balance-card-limit num" style="color:${remColor};">متبقي ${remDisplay} من الليميت</div>`;
+  }
   return `
     <div class="balance-card">
       <div class="balance-card-top">
@@ -878,6 +929,7 @@ function balanceCard(iconName, label, value) {
         <div class="balance-card-label">${esc(label)}</div>
       </div>
       <div class="balance-card-value num ${(neg && !state.balancesHidden)?'negative':''}">${display}</div>
+      ${limitHtml}
     </div>
   `;
 }
@@ -1075,8 +1127,10 @@ async function downloadDayPDF(dayKey, dayData) {
 
 function confirmDeleteTx(id) {
   if (confirm("تأكيد حذف المعاملة؟")) {
+    const tx = state.dayData.transactions.find(t => t.id === id);
     state.dayData = { ...state.dayData, transactions: state.dayData.transactions.filter(t => t.id !== id) };
     persistDay(state.today, state.dayData);
+    if (tx) applyLimitDelta(tx, null);
     render();
   }
 }
@@ -1391,6 +1445,23 @@ function renderTxSheetBody() {
   return html;
 }
 
+function vodafoneDepositContribution(t) {
+  if (t && t.category === "vodafone" && t.subtype === "إيداع" && t.walletId) {
+    return { walletId: t.walletId, amount: num(t.amount) };
+  }
+  return null;
+}
+function applyLimitDelta(oldTx, newTx) {
+  const oldC = vodafoneDepositContribution(oldTx);
+  const newC = vodafoneDepositContribution(newTx);
+  if (!oldC && !newC) return;
+  const limits = { ...state.walletLimits };
+  if (oldC) limits[oldC.walletId] = num(limits[oldC.walletId]) - oldC.amount;
+  if (newC) limits[newC.walletId] = num(limits[newC.walletId]) + newC.amount;
+  state.walletLimits = limits;
+  saveWalletLimits(limits);
+}
+
 function submitTx() {
   syncTxFormFromInputs();
   const f = state.txForm;
@@ -1398,6 +1469,7 @@ function submitTx() {
   if (!(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول من تاب \"الخدمات\" قبل ما تسجل معاملة شحن."); return; }
   if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص اللي المبلغ خرج له."); return; }
+  const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
   const tx = {
     id: f.id, time: f.time, category: f.category,
     subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : f.subtype),
@@ -1420,10 +1492,12 @@ function submitTx() {
     alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err));
     return; // keep the sheet open so the user doesn't lose what they typed
   }
+  applyLimitDelta(oldTx, tx);
   state.sheet = null;
   state.txForm = null;
   render();
 }
+
 
 /* ---------------- Close Day Sheet ---------------- */
 function openCloseSheet() { state.sheet = "close"; render(); }
@@ -1677,6 +1751,37 @@ function renderServicesView() {
       `).join("")}
     </div>
 
+    <div class="archive-title">حدود الإيداع (الليميت) للمحافظ</div>
+    <div class="services-list" style="margin-bottom:20px;">
+      ${WALLET_IDS.map(id => {
+        const used = num(state.walletLimits[id]);
+        const remaining = WALLET_LIMIT_TOTAL - used;
+        const remColor = remaining < 0 ? "var(--rust)" : "var(--emerald)";
+        const editing = state.editingWalletLimitId === id;
+        return `
+        <div class="services-row" style="align-items:flex-start; flex-wrap:wrap; row-gap:8px;">
+          ${icon("landmark",{size:16,color:"var(--ink-60)"})}
+          <div style="flex:1; min-width:130px;">
+            <div class="services-row-name">${esc(state.walletNames[id])}</div>
+            <div style="font-size:11.5px; color:var(--ink-60); margin-top:3px;">
+              الليميت: <span class="num" style="font-weight:700;">${money(WALLET_LIMIT_TOTAL)}</span>
+              · المتبقي: <span class="num" style="font-weight:700; color:${remColor};">${money(remaining)}</span>
+            </div>
+          </div>
+          ${editing ? `
+            <input type="number" inputmode="decimal" class="services-row-input" style="width:110px;"
+              placeholder="المستخدم من الليميت" id="wl-limit-input-${id}" value="${used || ''}" autofocus
+              onkeydown="if(event.key==='Enter'){saveWalletLimitUsed('${id}');}">
+            <button class="chip-btn small" style="flex:none; background:var(--ink); color:var(--paper); border-color:var(--ink);" onclick="saveWalletLimitUsed('${id}')">حفظ</button>
+          ` : `
+            <div class="num" style="font-weight:700; font-size:13.5px;">${money(used)}</div>
+            <button class="icon-btn" onclick="startEditWalletLimit('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>
+          `}
+        </div>
+      `;
+      }).join("")}
+    </div>
+
     <div class="services-header-row">
       <div class="archive-title" style="margin-bottom:0;">مكن الشحن</div>
       <button class="add-btn" onclick="openAddMachineSheet()">${icon("plus",{size:15})} إضافة</button>
@@ -1703,6 +1808,15 @@ function saveWalletName(id) {
     saveWalletNames(state.walletNames);
   }
   state.editingWalletId = null;
+  render();
+}
+function startEditWalletLimit(id) { state.editingWalletLimitId = id; render(); }
+function saveWalletLimitUsed(id) {
+  const el = document.getElementById("wl-limit-input-" + id);
+  const used = el ? num(el.value) : num(state.walletLimits[id]);
+  state.walletLimits = { ...state.walletLimits, [id]: used };
+  saveWalletLimits(state.walletLimits);
+  state.editingWalletLimitId = null;
   render();
 }
 function confirmDeleteMachine(id, name) {
