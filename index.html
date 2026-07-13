@@ -18,6 +18,10 @@
     --ink-15: rgba(23,38,43,0.15); --ink-20: rgba(23,38,43,0.20); --ink-40: rgba(23,38,43,0.45);
     --ink-60: rgba(23,38,43,0.65); --paper: #f2ecda; --paper-2: #e8dfc4;
     --emerald: #1f6f54; --steel: #35607a; --gold: #ad7a26; --rust: #a13a2a;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --tabbar-h: calc(65px + var(--safe-b));
+    --actionbar-h: 54px;
+    --actionbar-gap: 12px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
@@ -26,6 +30,8 @@
     -ms-touch-action: pan-x pan-y;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+    overflow-x: hidden;
+    overscroll-behavior-y: contain;
   }
   body {
     background: var(--ink);
@@ -44,7 +50,8 @@
 
   #shell {
     width: 100%; max-width: 480px; background: var(--paper);
-    min-height: 100vh; position: relative;
+    min-height: 100vh; min-height: 100svh; position: relative;
+    overflow-x: hidden;
   }
 
   /* Header */
@@ -52,22 +59,34 @@
     background: var(--ink); color: var(--paper);
     padding: 22px 18px 20px; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;
   }
-  .app-header-row { display: flex; align-items: center; gap: 10px; }
+  .app-header-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; row-gap: 8px; }
   .app-header-logo {
     width: 38px; height: 38px; border-radius: 10px; background: var(--paper);
     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
   .app-header-title { font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 18px; }
-  .app-header-date { font-size: 12.5px; color: var(--paper); opacity: 0.65; }
-  .app-header-profit { margin-right: auto; text-align: left; }
-  .app-header-profit-label { font-size: 11px; opacity: 0.6; }
-  .app-header-profit-value { font-size: 17px; font-weight: 700; }
+  .app-header-date { font-size: 12.5px; color: var(--paper); opacity: 0.65; white-space: nowrap; }
+  .app-header-profit { margin-inline-start: auto; text-align: left; min-width: 0; }
+  .app-header-profit-label { font-size: 11px; opacity: 0.6; white-space: nowrap; }
+  .app-header-profit-value { font-size: 17px; font-weight: 700; white-space: nowrap; }
 
-  .content { padding: 14px 16px 100px; }
+  .content { padding: 14px 16px calc(var(--tabbar-h) + var(--actionbar-h) + var(--actionbar-gap) + 24px); }
 
   /* Balance cards */
   .balance-grid-wrap { margin-bottom: 16px; }
   .balance-section-label { font-size: 12px; font-weight: 700; color: var(--ink-60); margin: 10px 2px 6px; }
+  .balances-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+  .balances-toolbar-title { font-size: 12px; font-weight: 700; color: var(--ink-60); }
+  .balances-toolbar-actions { display: flex; gap: 6px; }
+  .toolbar-btn {
+    background: #fff; border: 1px solid var(--ink-10); border-radius: 10px; padding: 7px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .toolbar-btn:active { background: var(--ink-08); }
+  .balance-collapsed-hint {
+    font-size: 12px; color: var(--ink-40); background: #fff; border: 1px dashed var(--ink-15);
+    border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 8px;
+  }
   .balance-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .balance-row-flex { display: flex; gap: 8px; }
   .balance-card {
@@ -100,7 +119,7 @@
   .primary-btn:disabled { background: var(--ink-20); cursor: default; }
 
   /* Transactions list header */
-  .tx-list-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .tx-list-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; row-gap: 6px; }
   .tx-list-title { font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 14.5px; }
   .tx-list-count { font-size: 12px; color: var(--ink-40); }
   .tx-list-box { background: #fff; border-radius: 16px; border: 1px solid var(--ink-10); padding: 4px 10px; }
@@ -121,18 +140,21 @@
 
   /* Floating action bar */
   .action-bar {
-    position: fixed; bottom: 78px; left: 0; right: 0; display: flex; justify-content: center; z-index: 20;
+    position: fixed; bottom: calc(var(--tabbar-h) + var(--actionbar-gap)); left: 0; right: 0;
+    display: flex; justify-content: center; z-index: 20;
+    transform: translateZ(0); will-change: transform;
   }
   .action-bar-inner { width: 100%; max-width: 480px; padding: 0 16px; display: flex; gap: 10px; }
   .action-bar-add {
-    flex: 1; background: var(--ink); color: var(--paper); border: none; border-radius: 14px; padding: 13px;
+    flex: 1; min-height: var(--actionbar-h); background: var(--ink); color: var(--paper); border: none; border-radius: 14px; padding: 13px;
     display: flex; align-items: center; justify-content: center; gap: 6px;
     font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 14.5px;
     box-shadow: 0 6px 18px rgba(0,0,0,0.25);
   }
   .action-bar-close {
-    background: #fff; color: var(--ink); border: 1.5px solid var(--ink-15); border-radius: 14px;
+    min-height: var(--actionbar-h); background: #fff; color: var(--ink); border: 1.5px solid var(--ink-15); border-radius: 14px;
     padding: 13px 16px; font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 14px;
+    white-space: nowrap;
   }
 
   /* Closed stamp */
@@ -228,21 +250,40 @@
   .services-empty { padding: 18px; text-align: center; color: var(--ink-40); font-size: 13px; }
 
   /* Tab bar */
-  .tab-bar-wrap { position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; z-index: 30; }
+  .tab-bar-wrap {
+    position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; z-index: 30;
+    transform: translateZ(0); will-change: transform;
+  }
   .tab-bar {
-    width: 100%; max-width: 480px; background: var(--ink); display: flex;
-    padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-top-left-radius: 18px; border-top-right-radius: 18px;
+    width: 100%; max-width: 480px; min-height: var(--tabbar-h); background: var(--ink); display: flex;
+    padding: 8px 10px calc(8px + var(--safe-b)); border-top-left-radius: 18px; border-top-right-radius: 18px;
   }
   .tab-btn {
-    flex: 1; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    flex: 1; min-width: 0; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
     padding: 6px 0; color: rgba(242,236,218,0.45); position: relative;
   }
   .tab-btn.active { color: var(--paper); }
-  .tab-btn-label { font-size: 11px; font-weight: 600; }
+  .tab-btn-label { font-size: 11px; font-weight: 600; white-space: nowrap; }
   .tab-btn-dot { position: absolute; top: 2px; left: calc(50% + 8px); width: 6px; height: 6px; border-radius: 99px; background: var(--emerald); }
 
   .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; gap: 12px; }
   .loading-text { font-family: 'Tajawal', sans-serif; color: var(--ink-40); font-size: 14px; }
+
+  /* Overflow safety for user-edited / dynamic text so nothing overlaps neighboring elements */
+  .tx-row-title, .services-row-name, .close-row-label, .archive-list-item-date,
+  .balance-card-label, .empty-state-desc { overflow-wrap: anywhere; word-break: break-word; }
+  .close-row-top { flex-wrap: wrap; row-gap: 4px; }
+
+  /* Small-screen tightening */
+  @media (max-width: 360px) {
+    .app-header { padding: 18px 14px 16px; }
+    .app-header-title { font-size: 16.5px; }
+    .app-header-profit-value { font-size: 15.5px; }
+    .content { padding-left: 12px; padding-right: 12px; }
+    .balance-card { padding: 10px 11px; }
+    .balance-card-value { font-size: 15.5px; }
+    .action-bar-add, .action-bar-close { font-size: 13.5px; padding-left: 10px; padding-right: 10px; }
+  }
 </style>
 </head>
 <body>
@@ -394,7 +435,25 @@ const state = {
   loginError: null,
   loginSubmitting: false,
   saveError: null,
+  balancesHidden: false,
+  walletsCollapsed: false,
 };
+
+try {
+  state.balancesHidden = localStorage.getItem("cashapp_balancesHidden") === "1";
+  state.walletsCollapsed = localStorage.getItem("cashapp_walletsCollapsed") === "1";
+} catch (e) { /* localStorage unavailable, just use defaults */ }
+
+function toggleBalancesHidden() {
+  state.balancesHidden = !state.balancesHidden;
+  try { localStorage.setItem("cashapp_balancesHidden", state.balancesHidden ? "1" : "0"); } catch (e) {}
+  render();
+}
+function toggleWalletsCollapsed() {
+  state.walletsCollapsed = !state.walletsCollapsed;
+  try { localStorage.setItem("cashapp_walletsCollapsed", state.walletsCollapsed ? "1" : "0"); } catch (e) {}
+  render();
+}
 
 const LISTENER_RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000];
 
@@ -612,6 +671,10 @@ const ICONS = {
   "pencil": '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="M15 5l4 4"/>',
   "chevron-right": '<polyline points="9 18 15 12 9 6"/>',
   "chevron-left": '<polyline points="15 18 9 12 15 6"/>',
+  "chevron-down": '<polyline points="6 9 12 15 18 9"/>',
+  "chevron-up": '<polyline points="18 15 12 9 6 15"/>',
+  "eye": '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/>',
+  "eye-off": '<path d="M9.9 4.24A9.12 9.24 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M6.61 6.61A18.5 18.5 0 0 0 1 12s4 8 11 8a9.26 9.26 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>',
   "alert-triangle": '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   "check-circle-2": '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
   "zap": '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
@@ -770,13 +833,28 @@ function setTab(t) {
 function renderBalancesGrid(live) {
   return `
     <div class="balance-grid-wrap">
+      <div class="balances-toolbar">
+        <div class="balances-toolbar-title">الأرصدة</div>
+        <div class="balances-toolbar-actions">
+          <button class="toolbar-btn" title="${state.balancesHidden ? 'إظهار الأرصدة' : 'إخفاء الأرصدة'}" onclick="toggleBalancesHidden()">
+            ${icon(state.balancesHidden ? "eye-off" : "eye", {size:16, color:"var(--ink-60)"})}
+          </button>
+          <button class="toolbar-btn" title="${state.walletsCollapsed ? 'عرض المحافظ' : 'إخفاء المحافظ'}" onclick="toggleWalletsCollapsed()">
+            ${icon(state.walletsCollapsed ? "chevron-down" : "chevron-up", {size:16, color:"var(--ink-60)"})}
+          </button>
+        </div>
+      </div>
       <div style="margin-bottom:8px;">
         ${balanceCard("banknote", "الدرج (كاش)", live.drawer)}
       </div>
       <div class="balance-section-label">المحافظ الإلكترونية</div>
-      <div class="balance-row2">
-        ${WALLET_IDS.map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id])).join("")}
-      </div>
+      ${state.walletsCollapsed ? `
+        <div class="balance-collapsed-hint">المحافظ مخفية · دوس على السهم فوق عشان تظهرها</div>
+      ` : `
+        <div class="balance-row2">
+          ${WALLET_IDS.map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id])).join("")}
+        </div>
+      `}
       <div class="balance-row-flex" style="margin-bottom:8px;">
         ${balanceCard("wallet", "رصيد انستاباي", live.instapay)}
       </div>
@@ -792,13 +870,14 @@ function renderBalancesGrid(live) {
 }
 function balanceCard(iconName, label, value) {
   const neg = value < 0;
+  const display = state.balancesHidden ? "••••" : money(value);
   return `
     <div class="balance-card">
       <div class="balance-card-top">
         ${icon(iconName, {size:13, color:"var(--ink-40)"})}
         <div class="balance-card-label">${esc(label)}</div>
       </div>
-      <div class="balance-card-value num ${neg?'negative':''}">${money(value)}</div>
+      <div class="balance-card-value num ${(neg && !state.balancesHidden)?'negative':''}">${display}</div>
     </div>
   `;
 }
@@ -810,6 +889,7 @@ function islamCard(value) {
   if (Math.abs(v) < 0.01) { statusLabel = "متسوّى"; color = "var(--ink-60)"; }
   else if (weOwe) { statusLabel = "لإسلام عندنا"; color = "var(--rust)"; }
   else { statusLabel = "لينا عند إسلام"; color = "var(--emerald)"; }
+  const display = state.balancesHidden ? "••••" : money(abs);
   return `
     <div class="balance-card" style="width:100%;">
       <div class="balance-card-top">
@@ -817,7 +897,7 @@ function islamCard(value) {
         <div class="balance-card-label">حساب إسلام</div>
       </div>
       <div style="display:flex; align-items:baseline; gap:8px;">
-        <div class="balance-card-value num" style="color:${color};">${money(abs)}</div>
+        <div class="balance-card-value num" style="color:${color};">${display}</div>
         <div style="font-size:12px; font-weight:700; color:${color};">${statusLabel}</div>
       </div>
     </div>
