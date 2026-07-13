@@ -403,7 +403,8 @@ function computeLive(dayData){
       if (t.subtype === "سحب") { drawer += (-amt + p); islamBalance += amt; }
       if (t.subtype === "إيداع") { drawer += (amt + p); islamBalance -= amt; }
     } else if (t.category === "machine") {
-      machines[t.machineId] = (machines[t.machineId] || 0) + (amt + p);
+      drawer += (amt + p);
+      machines[t.machineId] = (machines[t.machineId] || 0) - amt;
     } else if (t.category === "expense") {
       // خوارج: مبلغ خرج من الدرج لجهة تانية (مندوب، صاحب المكان، إلخ)
       drawer -= amt;
