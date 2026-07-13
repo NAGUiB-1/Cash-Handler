@@ -100,6 +100,26 @@
   .balance-card-value { font-size: 17px; font-weight: 700; color: var(--ink); }
   .balance-card-value.negative { color: var(--rust); }
 
+  /* Fawry wide card: spans both grid columns, title on top, 3 subs side by side */
+  .fawry-card {
+    background: #fff; border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
+    grid-column: 1 / -1;
+  }
+  .fawry-card-title {
+    display: flex; align-items: center; gap: 6px;
+    font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 13.5px; color: var(--ink);
+    margin-bottom: 10px;
+  }
+  .fawry-card-subs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .fawry-sub { min-width: 0; text-align: center; }
+  .fawry-sub:not(:first-child) { border-inline-start: 1px solid var(--ink-08); padding-inline-start: 10px; }
+  .fawry-sub-label {
+    font-size: 11px; color: var(--ink-60); font-weight: 600; margin-bottom: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .fawry-sub-value { font-size: 14.5px; font-weight: 700; color: var(--ink); }
+  .fawry-sub-value.negative { color: var(--rust); }
+
   /* Empty / start state */
   .empty-state { text-align: center; padding: 40px 10px; }
   .empty-state-icon {
@@ -434,6 +454,9 @@ function computeLive(dayData){
     } else if (t.category === "expense") {
       // خوارج: مبلغ خرج من الدرج لجهة تانية (مندوب، صاحب المكان، إلخ)
       drawer -= amt;
+    } else if (t.category === "cash") {
+      // نقدية: مبلغ كاش اتوّدع في الدرج
+      drawer += amt;
     }
   });
   return { drawer, machineDrawer, wallets, instapay, machines, islamBalance };
@@ -934,7 +957,7 @@ function renderBalancesGrid(live) {
           <div class="balance-row2" style="margin-bottom:8px;">
             ${state.machines.map(m => {
               const subs = machineSubs(m);
-              if (subs) return subs.map(s => balanceCard("landmark", `${m.name} - ${s}`, machineBalValue(live.machines[m.id], s))).join("");
+              if (subs) return fawryCard(m, live);
               return balanceCard("landmark", m.name, machineBalValue(live.machines[m.id]));
             }).join("")}
           </div>
@@ -962,6 +985,25 @@ function balanceCard(iconName, label, value, walletId) {
       </div>
       <div class="balance-card-value num ${(neg && !state.balancesHidden)?'negative':''}">${display}</div>
       ${limitHtml}
+    </div>
+  `;
+}
+function fawryCard(m, live) {
+  return `
+    <div class="fawry-card">
+      <div class="fawry-card-title">${icon("landmark",{size:14,color:"var(--ink-60)"})}${esc(m.name)}</div>
+      <div class="fawry-card-subs">
+        ${FAWRY_SUBS.map(s => {
+          const val = machineBalValue(live.machines[m.id], s);
+          const display = state.balancesHidden ? "••••" : money(val);
+          return `
+            <div class="fawry-sub">
+              <div class="fawry-sub-label">${s}</div>
+              <div class="fawry-sub-value num ${(val<0 && !state.balancesHidden)?'negative':''}">${display}</div>
+            </div>
+          `;
+        }).join("")}
+      </div>
     </div>
   `;
 }
@@ -1047,6 +1089,9 @@ function renderTxRow(tx, editable) {
   } else if (tx.category === "expense") {
     iconName = "log-out"; color = "var(--rust)";
     title = `خوارج · ${esc(tx.destination || "—")}`;
+  } else if (tx.category === "cash") {
+    iconName = "banknote"; color = "var(--emerald)";
+    title = `نقدية · ${esc(tx.destination || "—")}`;
   } else {
     const m = state.machines.find(m=>m.id===tx.machineId);
     if (tx.machineSub === "فيزا") {
@@ -1444,7 +1489,7 @@ function renderTxSheetBody() {
     <div class="field">
       <div class="field-label">الخدمة</div>
       <div class="chip-row wrap">
-        ${[["vodafone","فودافون كاش"],["instapay","انستاباي"],["machine","شحن مكن"],["islam","حساب إسلام"],["expense","خوارج"]].map(([k,l]) => `
+        ${[["vodafone","فودافون كاش"],["instapay","انستاباي"],["machine","شحن مكن"],["islam","حساب إسلام"],["cash","نقدية"],["expense","خوارج"]].map(([k,l]) => `
           <button class="chip-btn small ${f.category===k?'active':''}" onclick="txSelectCategory('${k}')">${l}</button>
         `).join("")}
       </div>
@@ -1527,7 +1572,16 @@ function renderTxSheetBody() {
     `;
   }
 
-  if (f.category === "expense") {
+  if (f.category === "cash") {
+    html += `
+      <div class="field">
+        <div class="field-label">اسم المودع</div>
+        <input type="text" class="input" placeholder="اسم الشخص اللي أودع المبلغ" id="tx-destination" value="${esc(f.destination||"")}">
+      </div>
+    `;
+  }
+
+  if (f.category === "expense" || f.category === "cash") {
     html += `
       <div class="field">
         <div class="field-label">المبلغ (ج.م)</div>
@@ -1604,16 +1658,17 @@ function submitTx() {
   const selSubs = selMachine ? machineSubs(selMachine) : null;
   if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
   if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص اللي المبلغ خرج له."); return; }
+  if (f.category === "cash" && !destTrimmed) { alert("اكتب اسم المودع."); return; }
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
   const tx = {
     id: f.id, time: f.time, category: f.category,
-    subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : f.subtype),
+    subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : f.subtype)),
     walletId: f.category === "vodafone" ? f.walletId : undefined,
     machineId: f.category === "machine" ? f.machineId : undefined,
     machineSub: (f.category === "machine" && selSubs) ? f.machineSub : undefined,
-    destination: f.category === "expense" ? destTrimmed : undefined,
+    destination: (f.category === "expense" || f.category === "cash") ? destTrimmed : undefined,
     amount: num(f.amount),
-    profit: f.category === "expense" ? 0 : (num(f.profit) || 0),
+    profit: (f.category === "expense" || f.category === "cash") ? 0 : (num(f.profit) || 0),
     note: (f.note||"").trim(),
   };
   Object.keys(tx).forEach(k => { if (tx[k] === undefined) delete tx[k]; });
