@@ -396,11 +396,25 @@ const state = {
   saveError: null,
 };
 
+const LISTENER_RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000];
+
 function attachRealtimeListeners() {
   if (state.listenersAttached) return;
   state.listenersAttached = true;
-  state.unsubscribers = [
-  db.collection("meta").doc("machines").onSnapshot(snap => {
+  state.unsubscribers = [];
+  attachMachinesListener(0);
+  attachWalletNamesListener(0);
+  attachDayListener(0);
+}
+
+function scheduleRetry(retryCount, fn) {
+  if (!state.authUser) return; // logged out meanwhile, don't retry
+  const delay = LISTENER_RETRY_DELAYS[Math.min(retryCount, LISTENER_RETRY_DELAYS.length - 1)];
+  setTimeout(() => { if (state.authUser) fn(); }, delay);
+}
+
+function attachMachinesListener(retryCount) {
+  const unsub = db.collection("meta").doc("machines").onSnapshot(snap => {
     const data = snap.exists ? snap.data() : null;
     if (data && Array.isArray(data.list) && data.list.length > 0) {
       state.machines = data.list;
@@ -414,9 +428,17 @@ function attachRealtimeListeners() {
     state.machinesReady = true;
     checkReady();
     render();
-  }, err => { console.error("machines listener error", err); if (state.authUser) showConnectionError(); }),
+  }, err => {
+    // machines have safe defaults, so a transient error here shouldn't block the whole app —
+    // just retry quietly in the background instead of showing a fatal screen.
+    console.error("machines listener error (retry " + retryCount + ")", err);
+    scheduleRetry(retryCount, () => attachMachinesListener(retryCount + 1));
+  });
+  state.unsubscribers.push(unsub);
+}
 
-  db.collection("meta").doc("walletNames").onSnapshot(snap => {
+function attachWalletNamesListener(retryCount) {
+  const unsub = db.collection("meta").doc("walletNames").onSnapshot(snap => {
     if (snap.exists) {
       state.walletNames = snap.data();
     } else if (!state.walletNamesReady) {
@@ -427,15 +449,30 @@ function attachRealtimeListeners() {
     state.walletNamesReady = true;
     checkReady();
     render();
-  }, err => { console.error("walletNames listener error", err); if (state.authUser) showConnectionError(); }),
+  }, err => {
+    console.error("walletNames listener error (retry " + retryCount + ")", err);
+    scheduleRetry(retryCount, () => attachWalletNamesListener(retryCount + 1));
+  });
+  state.unsubscribers.push(unsub);
+}
 
-  db.collection("days").doc(state.today).onSnapshot(snap => {
+function attachDayListener(retryCount) {
+  const unsub = db.collection("days").doc(state.today).onSnapshot(snap => {
     state.dayData = snap.exists ? snap.data() : emptyDay();
     state.dayReady = true;
+    state.connectionError = null; // we're clearly connected now, clear any stale error
     checkReady();
     render();
-  }, err => { console.error("day listener error", err); if (state.authUser) showConnectionError(); }),
-  ];
+  }, err => {
+    console.error("day listener error (retry " + retryCount + ")", err);
+    if (retryCount < LISTENER_RETRY_DELAYS.length) {
+      scheduleRetry(retryCount, () => attachDayListener(retryCount + 1));
+    } else {
+      // this one is critical (it's what the whole app is built on) — only give up after several tries
+      showConnectionError();
+    }
+  });
+  state.unsubscribers.push(unsub);
 }
 
 function checkReady() {
