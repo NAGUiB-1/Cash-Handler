@@ -4,8 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>دفتر المحل</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-auth-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js" defer></script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Cpath d='M5 9l1.2-4h11.6L19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Tajawal:wght@400;500;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
@@ -246,17 +249,63 @@
 <div id="shell"></div>
 
 <script>
-/* ---------------- storage helpers (localStorage-backed) ---------------- */
-const LS_PREFIX = "store-ledger:";
-function getJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(LS_PREFIX + key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) { return fallback; }
+/* ---------------- Firebase (Firestore) ---------------- */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC6X9s2vAb4XIFUKEuTxPCjyo6iXuOnkTg",
+  authDomain: "cash-app-9745c.firebaseapp.com",
+  projectId: "cash-app-9745c",
+  storageBucket: "cash-app-9745c.firebasestorage.app",
+  messagingSenderId: "767255009973",
+  appId: "1:767255009973:web:e6b260ecaa64553a56fcfc"
+};
+let db = null;
+
+function waitForFirebaseSDK(timeoutMs) {
+  timeoutMs = timeoutMs || 20000;
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    (function poll() {
+      if (typeof firebase !== "undefined" && firebase.apps) { resolve(); return; }
+      if (Date.now() - start > timeoutMs) { reject(new Error("firebase-sdk-timeout")); return; }
+      setTimeout(poll, 100);
+    })();
+  });
 }
-function setJSON(key, value) {
-  try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(value)); }
-  catch (e) { console.error("storage set failed", e); }
+
+function reportSaveError(msg) {
+  console.error(msg);
+  state.saveError = msg;
+  render();
+}
+function saveMachines(machines) {
+  if (!db) return;
+  db.collection("meta").doc("machines").set({ list: machines })
+    .catch(err => reportSaveError("فشل حفظ بيانات المكن: " + (err.message || err.code)));
+}
+function saveWalletNames(names) {
+  if (!db) return;
+  db.collection("meta").doc("walletNames").set(names)
+    .catch(err => reportSaveError("فشل حفظ أسماء المحافظ: " + (err.message || err.code)));
+}
+function persistDay(key, data) {
+  if (!db) return;
+  db.collection("days").doc(key).set(data)
+    .catch(err => reportSaveError("فشل حفظ بيانات اليوم! البيانات دي متسجلتش على السيرفر: " + (err.message || err.code)));
+}
+function fetchArchiveList() {
+  if (!db) return Promise.resolve([]);
+  return db.collection("days")
+    .orderBy(firebase.firestore.FieldPath.documentId(), "desc")
+    .limit(90)
+    .get()
+    .then(snap => snap.docs.map(d => d.id))
+    .catch(err => { console.error("fetchArchiveList failed", err); return []; });
+}
+function fetchArchiveDay(key) {
+  if (!db) return Promise.resolve(null);
+  return db.collection("days").doc(key).get()
+    .then(snap => snap.exists ? snap.data() : null)
+    .catch(err => { console.error("fetchArchiveDay failed", err); return null; });
 }
 
 /* ---------------- date/format helpers ---------------- */
@@ -322,6 +371,7 @@ const state = {
   machines: [],
   walletNames: { w1:"محفظة 1", w2:"محفظة 2", w3:"محفظة 3", w4:"محفظة 4" },
   archiveIndex: [],
+  archiveLoading: false,
   today: dateKey(new Date()),
   dayData: emptyDay(),
   tab: "today",
@@ -331,22 +381,176 @@ const state = {
   txForm: null,
   editingWalletId: null,
   busy: false,
+  ready: false,
+  connectionError: null,
+  machinesReady: false,
+  walletNamesReady: false,
+  dayReady: false,
+  fbReady: false,
+  authUser: null,
+  authChecked: false,
+  listenersAttached: false,
+  unsubscribers: [],
+  loginError: null,
+  loginSubmitting: false,
+  saveError: null,
 };
 
-function loadInitial() {
-  let m = getJSON("machines", null);
-  if (m === null || m.length === 0) {
-    const DEFAULT_MACHINES = ["فوري", "اوبي", "أمان", "ممكن", "سوبر باي", "باب رزق"];
-    m = DEFAULT_MACHINES.map(name => ({ id: genId(), name }));
-    setJSON("machines", m);
-  }
-  state.machines = m;
-  state.walletNames = getJSON("wallet-names", { w1:"محفظة 1", w2:"محفظة 2", w3:"محفظة 3", w4:"محفظة 4" });
-  state.archiveIndex = getJSON("days-index", []);
-  state.dayData = getJSON(`day:${state.today}`, emptyDay());
+function attachRealtimeListeners() {
+  if (state.listenersAttached) return;
+  state.listenersAttached = true;
+  state.unsubscribers = [
+  db.collection("meta").doc("machines").onSnapshot(snap => {
+    const data = snap.exists ? snap.data() : null;
+    if (data && Array.isArray(data.list) && data.list.length > 0) {
+      state.machines = data.list;
+    } else if (!state.machinesReady) {
+      // seed defaults once, only the first time this doc is empty
+      const DEFAULT_MACHINES = ["فوري", "اوبي", "أمان", "ممكن", "سوبر باي", "باب رزق"];
+      const seeded = DEFAULT_MACHINES.map(name => ({ id: genId(), name }));
+      state.machines = seeded;
+      saveMachines(seeded);
+    }
+    state.machinesReady = true;
+    checkReady();
+    render();
+  }, err => { console.error("machines listener error", err); if (state.authUser) showConnectionError(); }),
+
+  db.collection("meta").doc("walletNames").onSnapshot(snap => {
+    if (snap.exists) {
+      state.walletNames = snap.data();
+    } else if (!state.walletNamesReady) {
+      const defaults = { w1:"محفظة 1", w2:"محفظة 2", w3:"محفظة 3", w4:"محفظة 4" };
+      state.walletNames = defaults;
+      saveWalletNames(defaults);
+    }
+    state.walletNamesReady = true;
+    checkReady();
+    render();
+  }, err => { console.error("walletNames listener error", err); if (state.authUser) showConnectionError(); }),
+
+  db.collection("days").doc(state.today).onSnapshot(snap => {
+    state.dayData = snap.exists ? snap.data() : emptyDay();
+    state.dayReady = true;
+    checkReady();
+    render();
+  }, err => { console.error("day listener error", err); if (state.authUser) showConnectionError(); }),
+  ];
 }
 
-function persistDay(key, data) { setJSON(`day:${key}`, data); }
+function checkReady() {
+  // only block the UI on today's data - wallet names / machines have safe
+  // defaults and will pop in a moment later if they're still loading.
+  if (state.dayReady) {
+    state.ready = true;
+  }
+}
+
+function showConnectionError() {
+  state.connectionError = "تعذر الاتصال بقاعدة البيانات. تأكد من اتصالك بالإنترنت.";
+  render();
+}
+
+const LOGIN_EMAIL_DOMAIN = "@cash.app";
+
+async function bootApp() {
+  render(); // shows the loading screen immediately
+  try {
+    await waitForFirebaseSDK();
+    firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.firestore();
+    db.settings({ ignoreUndefinedProperties: true });
+    try {
+      await db.enablePersistence({ synchronizeTabs: true });
+    } catch (e) {
+      console.warn("offline persistence not enabled", e.code || e.message);
+    }
+    state.fbReady = true;
+    firebase.auth().onAuthStateChanged(user => {
+      state.authUser = user;
+      state.authChecked = true;
+      state.loginSubmitting = false;
+      if (user) {
+        attachRealtimeListeners();
+      }
+      render();
+    });
+    render();
+  } catch (e) {
+    console.error("boot failed", e);
+    showConnectionError();
+  }
+}
+
+function attemptLogin() {
+  const uEl = document.getElementById("login-username");
+  const pEl = document.getElementById("login-password");
+  const username = (uEl?.value || "").trim().toLowerCase();
+  const password = pEl?.value || "";
+  if (!username || !password) {
+    state.loginError = "اكتب اسم المستخدم وكلمة المرور";
+    render();
+    return;
+  }
+  state.loginError = null;
+  state.loginSubmitting = true;
+  render();
+  const email = username + LOGIN_EMAIL_DOMAIN;
+  firebase.auth().signInWithEmailAndPassword(email, password)
+    .catch(err => {
+      console.error("login failed", err.code, err.message);
+      state.loginSubmitting = false;
+      const map = {
+        "auth/operation-not-allowed": `طريقة الدخول (Email/Password) مش مفعّلة في Firebase. روح Authentication → Sign-in method وفعّلها.`,
+        "auth/user-not-found": `مفيش حساب مسجّل بالإيميل "${email}". اتأكد إنك عملته في Authentication → Users بنفس الإيميل ده بالظبط.`,
+        "auth/wrong-password": "كلمة المرور غلط. اتأكد إنها مطابقة بالظبط (فيها حروف كبيرة وصغيرة) من غير مسافات زيادة.",
+        "auth/invalid-credential": `اسم المستخدم أو كلمة المرور مش متطابقين مع الحساب "${email}" في Firebase.`,
+        "auth/invalid-email": "اسم المستخدم فيه رمز مش مسموح.",
+        "auth/user-disabled": "الحساب ده متوقف من Firebase Console.",
+        "auth/too-many-requests": "محاولات غلط كتير، استنى شوية وجرب تاني.",
+        "auth/network-request-failed": "مفيش اتصال بالإنترنت.",
+      };
+      state.loginError = map[err.code] || `خطأ (${err.code || "غير معروف"}): ${err.message || ""}`;
+      render();
+    });
+}
+
+function logout() {
+  if (!confirm("تسجيل الخروج؟")) return;
+  (state.unsubscribers || []).forEach(u => { try { u(); } catch(e) {} });
+  state.unsubscribers = [];
+  state.listenersAttached = false;
+  state.ready = false;
+  state.machinesReady = false;
+  state.walletNamesReady = false;
+  state.dayReady = false;
+  state.connectionError = null;
+  firebase.auth().signOut();
+}
+
+function renderLoginScreen() {
+  return `
+    <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
+      <div style="width:100%; max-width:340px; background:#fff; border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
+        <div style="text-align:center; margin-bottom:20px;">
+          <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("store",{size:26,color:"var(--ink-60)"})}</div>
+          <div class="empty-state-title">دفتر المحل</div>
+          <div style="font-size:12.5px; color:var(--ink-60); margin-top:4px;">سجّل الدخول عشان تكمل</div>
+        </div>
+        <div class="field">
+          <div class="field-label">اسم المستخدم</div>
+          <input type="text" class="input" id="login-username" placeholder="admin" autocomplete="username" autocapitalize="off">
+        </div>
+        <div class="field">
+          <div class="field-label">كلمة المرور</div>
+          <input type="password" class="input" id="login-password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter'){attemptLogin();}">
+        </div>
+        ${state.loginError ? `<div class="warn-box" style="margin-bottom:14px;">${esc(state.loginError)}</div>` : ""}
+        <button class="primary-btn" onclick="attemptLogin()" ${state.loginSubmitting ? "disabled" : ""}>${state.loginSubmitting ? "جاري الدخول..." : "دخول"}</button>
+      </div>
+    </div>
+  `;
+}
 
 /* ---------------- icon helper (self-contained SVGs, no network needed) ---------------- */
 const ICONS = {
@@ -371,6 +575,7 @@ const ICONS = {
   "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
   "user": '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/>',
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  "rotate-ccw": '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
 };
 function icon(name, opts) {
   opts = opts || {};
@@ -393,6 +598,43 @@ function tint15(color) { return TINT15[color] || "#eee"; }
 /* ---------------- render dispatch ---------------- */
 function render() {
   const root = document.getElementById("shell");
+
+  if (state.connectionError) {
+    root.innerHTML = `
+      <div class="loading-wrap">
+        ${icon("alert-triangle", {size:32, color:"var(--rust)"})}
+        <div class="loading-text" style="color:var(--rust); text-align:center; padding:0 24px;">${esc(state.connectionError)}</div>
+        <button class="primary-btn" style="width:auto; padding:11px 22px;" onclick="location.reload()">إعادة المحاولة</button>
+      </div>
+    `;
+    return;
+  }
+
+  if (!state.fbReady || !state.authChecked) {
+    root.innerHTML = `
+      <div class="loading-wrap">
+        <div class="spin">${icon("loader-2", {size:32, color:"var(--ink-40)"})}</div>
+        <div class="loading-text">جاري الاتصال...</div>
+      </div>
+    `;
+    return;
+  }
+
+  if (!state.authUser) {
+    root.innerHTML = renderLoginScreen();
+    return;
+  }
+
+  if (!state.ready) {
+    root.innerHTML = `
+      <div class="loading-wrap">
+        <div class="spin">${icon("loader-2", {size:32, color:"var(--ink-40)"})}</div>
+        <div class="loading-text">جاري تحميل بيانات المحل...</div>
+      </div>
+    `;
+    return;
+  }
+
   const live = computeLive(state.dayData);
   const profitTotal = (state.dayData.transactions||[]).reduce((a,t)=>a+num(t.profit),0);
 
@@ -404,6 +646,13 @@ function render() {
 
   root.innerHTML = `
     ${renderHeader(state.dayData.status !== "not_started" ? profitTotal : null)}
+    ${state.saveError ? `
+      <div style="position:sticky; top:0; z-index:40; background:var(--rust); color:#fff; padding:10px 16px; font-size:12.5px; display:flex; align-items:center; gap:8px;">
+        ${icon("alert-triangle",{size:15,color:"#fff"})}
+        <span style="flex:1;">${esc(state.saveError)}</span>
+        <button class="icon-btn" onclick="state.saveError=null; render();">${icon("x",{size:14,color:"#fff"})}</button>
+      </div>
+    ` : ""}
     <div class="content">${bodyHtml}</div>
     ${renderTabBar()}
     ${state.sheet ? renderSheet() : ""}
@@ -427,7 +676,7 @@ function renderHeader(profit) {
             <div class="app-header-profit-value num">${money(profit)} <span style="font-size:11px;font-weight:400;">ج.م</span></div>
           </div>
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:rgba(242,236,218,0.12); border-radius:10px;">
-            ${icon("log-out", {size:17, color:"var(--paper)"})}
+            ${icon("rotate-ccw", {size:17, color:"var(--paper)"})}
           </button>` : ""}
       </div>
     </div>
@@ -458,6 +707,16 @@ function renderTabBar() {
 function setTab(t) {
   state.tab = t;
   state.viewDate = null;
+  if (t === "archive") {
+    state.archiveLoading = true;
+    render();
+    fetchArchiveList().then(list => {
+      state.archiveIndex = list;
+      state.archiveLoading = false;
+      render();
+    });
+    return;
+  }
   render();
 }
 
@@ -710,6 +969,11 @@ function confirmStartNewDay() {
     ? "هيتم مسح بيانات اليوم الحالي (المقفول) وهتقدر تبدأ يوم جديد من الأول بأرصدة جديدة. متأكد؟"
     : "اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي (المعاملات والأرصدة). متأكد إنك عايز تبدأ من الأول؟";
   if (confirm(msg)) {
+    // safety snapshot: keep a copy of today's data before wiping it, in case of accidental reset
+    if (db && (state.dayData.transactions || []).length > 0) {
+      db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
+        .catch(err => console.error("backup before reset failed", err));
+    }
     state.dayData = emptyDay();
     persistDay(state.today, state.dayData);
     state.tab = "today";
@@ -758,6 +1022,9 @@ function renderStartSheet() {
 }
 
 function submitStartDay() {
+  if (state.dayData.status !== "not_started" && (state.dayData.transactions || []).length > 0) {
+    if (!confirm("فيه معاملات مسجلة بالفعل النهاردة! لو كملت هيتمسحوا نهائيًا. متأكد؟")) return;
+  }
   const opening = {
     drawer: num(document.getElementById("sd-drawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
@@ -771,10 +1038,6 @@ function submitStartDay() {
   const nd = { ...emptyDay(), status: "open", opening };
   state.dayData = nd;
   persistDay(state.today, nd);
-  if (!state.archiveIndex.includes(state.today)) {
-    state.archiveIndex = [state.today, ...state.archiveIndex];
-    setJSON("days-index", state.archiveIndex);
-  }
   state.sheet = null;
   render();
 }
@@ -1006,9 +1269,9 @@ function submitTx() {
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
-  if (!(num(f.amount) > 0)) return;
-  if (f.category === "machine" && !f.machineId) return;
-  if (f.category === "expense" && !destTrimmed) return;
+  if (!(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
+  if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول من تاب \"الخدمات\" قبل ما تسجل معاملة شحن."); return; }
+  if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص اللي المبلغ خرج له."); return; }
   const tx = {
     id: f.id, time: f.time, category: f.category,
     subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : f.subtype),
@@ -1019,11 +1282,18 @@ function submitTx() {
     profit: f.category === "expense" ? 0 : (num(f.profit) || 0),
     note: (f.note||"").trim(),
   };
+  Object.keys(tx).forEach(k => { if (tx[k] === undefined) delete tx[k]; });
   let txs;
   if (tx.id) txs = state.dayData.transactions.map(t => t.id === tx.id ? { ...tx } : t);
   else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: timeNow() }];
   state.dayData = { ...state.dayData, transactions: txs };
-  persistDay(state.today, state.dayData);
+  try {
+    persistDay(state.today, state.dayData);
+  } catch (err) {
+    console.error("submitTx save failed", err);
+    alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err));
+    return; // keep the sheet open so the user doesn't lose what they typed
+  }
   state.sheet = null;
   state.txForm = null;
   render();
@@ -1123,7 +1393,7 @@ function submitAddMachine() {
   const name = document.getElementById("am-name").value.trim();
   if (!name) return;
   state.machines = [...state.machines, { id: genId(), name }];
-  setJSON("machines", state.machines);
+  saveMachines(state.machines);
   state.sheet = null;
   render();
 }
@@ -1183,6 +1453,9 @@ function refreshSheetOnly() {
 
 /* ---------------- Archive ---------------- */
 function renderArchiveView() {
+  if (state.archiveLoading) {
+    return `<div class="archive-title">الأرشيف</div><div class="archive-empty">جاري التحميل...</div>`;
+  }
   const past = state.archiveIndex.filter(d => d !== state.today);
   if (past.length === 0) {
     return `<div class="archive-title">الأرشيف</div><div class="archive-empty">مفيش أيام سابقة لسه</div>`;
@@ -1202,8 +1475,12 @@ function renderArchiveView() {
 
 function openArchiveDay(d) {
   state.viewDate = d;
-  state.archiveDayData = getJSON(`day:${d}`, null);
+  state.archiveDayData = null;
   render();
+  fetchArchiveDay(d).then(data => {
+    state.archiveDayData = data || emptyDay();
+    render();
+  });
 }
 
 function renderArchiveDetail() {
@@ -1251,6 +1528,11 @@ function renderServicesView() {
         <div class="services-row-name" style="color:var(--rust);">بدء يوم جديد (إعادة تعيين)</div>
         ${icon("chevron-left",{size:15,color:"var(--ink-40)"})}
       </div>
+      <div class="services-row" style="cursor:pointer;" onclick="logout()">
+        ${icon("log-out",{size:16,color:"var(--ink-60)"})}
+        <div class="services-row-name">تسجيل الخروج</div>
+        ${icon("chevron-left",{size:15,color:"var(--ink-40)"})}
+      </div>
     </div>
 
     <div class="archive-title">المحافظ الإلكترونية</div>
@@ -1292,7 +1574,7 @@ function saveWalletName(id) {
   const name = el ? el.value.trim() : "";
   if (name) {
     state.walletNames = { ...state.walletNames, [id]: name };
-    setJSON("wallet-names", state.walletNames);
+    saveWalletNames(state.walletNames);
   }
   state.editingWalletId = null;
   render();
@@ -1300,7 +1582,7 @@ function saveWalletName(id) {
 function confirmDeleteMachine(id, name) {
   if (confirm(`حذف "${name}"؟`)) {
     state.machines = state.machines.filter(m => m.id !== id);
-    setJSON("machines", state.machines);
+    saveMachines(state.machines);
     render();
   }
 }
@@ -1319,8 +1601,7 @@ document.addEventListener('touchend', function (e) {
 document.addEventListener('wheel', function (e) { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 
 /* ---------------- boot ---------------- */
-loadInitial();
-render();
+bootApp();
 </script>
 </body>
 </html>
