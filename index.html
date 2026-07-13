@@ -489,33 +489,42 @@ function showConnectionError() {
 }
 
 const LOGIN_EMAIL_DOMAIN = "@cash.app";
+const BOOT_RETRY_DELAYS = [1000, 2000, 4000, 8000];
 
-async function bootApp() {
+async function bootApp(retryCount) {
+  retryCount = retryCount || 0;
   render(); // shows the loading screen immediately
   try {
     await waitForFirebaseSDK();
-    firebase.initializeApp(FIREBASE_CONFIG);
-    db = firebase.firestore();
-    db.settings({ ignoreUndefinedProperties: true });
-    try {
-      await db.enablePersistence({ synchronizeTabs: true });
-    } catch (e) {
-      console.warn("offline persistence not enabled", e.code || e.message);
-    }
-    state.fbReady = true;
-    firebase.auth().onAuthStateChanged(user => {
-      state.authUser = user;
-      state.authChecked = true;
-      state.loginSubmitting = false;
-      if (user) {
-        attachRealtimeListeners();
+    if (!state.fbReady) {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      db = firebase.firestore();
+      db.settings({ ignoreUndefinedProperties: true });
+      try {
+        await db.enablePersistence({ synchronizeTabs: true });
+      } catch (e) {
+        console.warn("offline persistence not enabled", e.code || e.message);
       }
-      render();
-    });
+      state.fbReady = true;
+      firebase.auth().onAuthStateChanged(user => {
+        state.authUser = user;
+        state.authChecked = true;
+        state.loginSubmitting = false;
+        if (user) {
+          attachRealtimeListeners();
+        }
+        render();
+      });
+    }
+    state.connectionError = null;
     render();
   } catch (e) {
-    console.error("boot failed", e);
-    showConnectionError();
+    console.error("boot failed (attempt " + retryCount + ")", e);
+    if (retryCount < BOOT_RETRY_DELAYS.length) {
+      setTimeout(() => bootApp(retryCount + 1), BOOT_RETRY_DELAYS[retryCount]);
+    } else {
+      showConnectionError();
+    }
   }
 }
 
