@@ -725,7 +725,11 @@ function loadUserProfile(user) {
         state.userProfileReady = true;
         render();
         alert("الحساب ده متعطّل من الأدمن.");
-        firebase.auth().signOut();
+        firebase.auth().signOut()
+          .then(() => db ? db.terminate() : null)
+          .then(() => firebase.firestore().clearPersistence())
+          .catch(err => console.warn("disabled-account cleanup failed", err))
+          .finally(() => location.reload());
         return;
       }
       state.userProfile = { username: data.username || (user.email||"").split("@")[0], role: data.role || "viewer" };
@@ -909,7 +913,15 @@ function logout() {
   state.userProfile = null;
   state.userProfileReady = false;
   state.usersList = [];
-  firebase.auth().signOut();
+
+  // بعد الخروج، بنقفل الاتصال بالكامل ومسح أي بيانات كانت متخزنة محليًا على
+  // الجهاز (IndexedDB offline cache) عشان لو الجهاز مشترك (كمبيوتر/تابلت المحل)
+  // محدش يقدر يفتح الـ DevTools بعد تسجيل الخروج ويشوف بيانات آخر حساب دخل بيه.
+  firebase.auth().signOut()
+    .then(() => db ? db.terminate() : null)
+    .then(() => firebase.firestore().clearPersistence())
+    .catch(err => console.warn("logout cleanup (clearPersistence) failed", err))
+    .finally(() => location.reload());
 }
 
 function renderLoginScreen() {
