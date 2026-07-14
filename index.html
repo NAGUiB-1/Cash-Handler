@@ -359,18 +359,18 @@ function persistDay(key, data) {
 }
 function fetchArchiveList() {
   if (!db) return Promise.resolve([]);
+  // بنجيب كل مستندات الأيام من غير orderBy على اسم المستند، عشان كده مش محتاجين نعمل composite index
+  // في Firestore (كان محتاج فهرس زيادة عشان الترتيب التنازلي على __name__). الترتيب بيتم محليًا بدل السيرفر.
   return db.collection("days")
-    .orderBy(firebase.firestore.FieldPath.documentId(), "desc")
-    .limit(90)
     .get()
-    .then(snap => snap.docs.map(d => d.id))
-    .catch(err => { console.error("fetchArchiveList failed", err); return []; });
+    .then(snap => snap.docs.map(d => d.id).sort((a, b) => b.localeCompare(a)).slice(0, 90));
+    // (no .catch here on purpose — let the caller see and display the real error instead of a silent empty list)
 }
 function fetchArchiveDay(key) {
   if (!db) return Promise.resolve(null);
   return db.collection("days").doc(key).get()
-    .then(snap => snap.exists ? snap.data() : null)
-    .catch(err => { console.error("fetchArchiveDay failed", err); return null; });
+    .then(snap => snap.exists ? snap.data() : null);
+    // (no .catch here on purpose — let the caller see and display the real error)
 }
 
 /* ---------------- date/format helpers ---------------- */
@@ -468,11 +468,13 @@ const state = {
   walletNames: { w1:"محفظة 1", w2:"محفظة 2", w3:"محفظة 3", w4:"محفظة 4" },
   archiveIndex: [],
   archiveLoading: false,
+  archiveError: null,
   today: dateKey(new Date()),
   dayData: emptyDay(),
   tab: "today",
   viewDate: null,
   archiveDayData: null,
+  archiveDetailError: null,
   sheet: null,        // 'start' | 'tx' | 'close' | 'addMachine' | null
   txForm: null,
   editingWalletId: null,
@@ -495,6 +497,13 @@ const state = {
   balancesHidden: false,
   collapsedSections: { main: false, wallets: false, machines: false },
   walletLimits: { w1: 0, w2: 0, w3: 0, w4: 0 },
+  userProfile: null,        // { username, role: 'admin'|'editor'|'viewer' }
+  userProfileReady: false,
+  usersList: [],
+  usersListLoading: false,
+  newUserForm: null,
+  addUserError: null,
+  addUserBusy: false,
 };
 
 try {
@@ -649,6 +658,10 @@ async function bootApp(retryCount) {
         state.loginSubmitting = false;
         if (user) {
           attachRealtimeListeners();
+          loadUserProfile(user);
+        } else {
+          state.userProfile = null;
+          state.userProfileReady = false;
         }
         render();
       });
@@ -698,6 +711,191 @@ function attemptLogin() {
     });
 }
 
+/* ---------------- Users & permissions ---------------- */
+// كل مستخدم عنده بروفايل في Firestore (users/{uid}) فيه: username, role ('admin' | 'editor' | 'viewer'), disabled
+// أول حساب يدخل التطبيق (لما تكولكشن "users" تبقى فاضية تمامًا) بيتسجل تلقائيًا كـ "أدمن" (مرة واحدة بس، عشان تأمين الحساب اللي كان بيستخدم التطبيق قبل النظام ده).
+// أي حساب تاني مالوش بروفايل بعد كده بيتعامل كـ "رؤية فقط" افتراضيًا لحد ما الأدمن يحدد له صلاحية، تأمينًا من إن أي خطأ أثناء إنشاء مستخدم يديله صلاحية أدمن غلط.
+function loadUserProfile(user) {
+  if (!db) return;
+  db.collection("users").doc(user.uid).get().then(snap => {
+    if (snap.exists) {
+      const data = snap.data();
+      if (data.disabled) {
+        state.userProfile = null;
+        state.userProfileReady = true;
+        render();
+        alert("الحساب ده متعطّل من الأدمن.");
+        firebase.auth().signOut();
+        return;
+      }
+      state.userProfile = { username: data.username || (user.email||"").split("@")[0], role: data.role || "viewer" };
+      state.userProfileReady = true;
+      render();
+      return;
+    }
+    // مفيش بروفايل لليوزر ده - نتأكد الأول لو ده أول حساب في النظام كله قبل ما نديله أدمن
+    db.collection("users").limit(1).get().then(qsnap => {
+      const username = (user.email || "").split("@")[0];
+      if (qsnap.empty) {
+        const profile = { username, role: "admin", disabled: false, createdAt: Date.now() };
+        db.collection("users").doc(user.uid).set(profile).catch(err => console.error("seed admin profile failed", err));
+        state.userProfile = { username, role: "admin" };
+      } else {
+        state.userProfile = { username, role: "viewer" };
+      }
+      state.userProfileReady = true;
+      render();
+    }).catch(err => {
+      console.error("loadUserProfile bootstrap check failed", err);
+      state.userProfileReady = true;
+      render();
+    });
+  }).catch(err => {
+    console.error("loadUserProfile failed", err);
+    state.userProfileReady = true; // fail-closed: no profile means no edit permission below
+    render();
+  });
+}
+function isAdmin() { return !!state.userProfile && state.userProfile.role === "admin"; }
+function canEdit() { return !!state.userProfile && (state.userProfile.role === "admin" || state.userProfile.role === "editor"); }
+function requireEdit() {
+  if (!canEdit()) { alert("حسابك في وضع (رؤية فقط) ومش هيقدر يعدّل أو يضيف بيانات. كلّم الأدمن لو محتاج صلاحية أعلى."); return false; }
+  return true;
+}
+function roleLabel(role) {
+  if (role === "admin") return "أدمن";
+  if (role === "editor") return "رؤية وتعديل";
+  return "رؤية فقط";
+}
+
+function loadUsersList() {
+  if (!db) return;
+  state.usersListLoading = true;
+  render();
+  db.collection("users").get().then(snap => {
+    state.usersList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.usersListLoading = false;
+    render();
+  }).catch(err => {
+    console.error("loadUsersList failed", err);
+    state.usersListLoading = false;
+    render();
+  });
+}
+
+function openAddUserSheet() {
+  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يضيف مستخدمين جداد."); return; }
+  state.newUserForm = { username: "", password: "", role: "editor" };
+  state.addUserError = null;
+  state.sheet = "addUser";
+  render();
+}
+function syncAddUserFormFromInputs() {
+  const uEl = document.getElementById("au-username");
+  const pEl = document.getElementById("au-password");
+  if (uEl) state.newUserForm.username = uEl.value;
+  if (pEl) state.newUserForm.password = pEl.value;
+}
+function selectNewUserRole(role) {
+  syncAddUserFormFromInputs();
+  state.newUserForm.role = role;
+  render();
+}
+function updateAddUserBtn() {
+  const uEl = document.getElementById("au-username");
+  const pEl = document.getElementById("au-password");
+  const btn = document.getElementById("au-submit-btn");
+  if (btn) btn.disabled = !( (uEl?.value||"").trim() && (pEl?.value||"").length >= 6 );
+}
+function renderAddUserSheetBody() {
+  const f = state.newUserForm || { role: "editor" };
+  return `
+    <div class="field">
+      <div class="field-label">اسم المستخدم</div>
+      <input type="text" class="input" placeholder="مثال: ahmed" id="au-username" value="${esc(f.username||"")}" autocapitalize="off" oninput="updateAddUserBtn()">
+    </div>
+    <div class="field">
+      <div class="field-label">كلمة المرور</div>
+      <input type="password" class="input" placeholder="6 أحرف على الأقل" id="au-password" value="${esc(f.password||"")}" oninput="updateAddUserBtn()">
+    </div>
+    <div class="field">
+      <div class="field-label">الصلاحية</div>
+      <div class="chip-row">
+        <button class="chip-btn ${f.role==='editor'?'active':''}" onclick="selectNewUserRole('editor')">رؤية وتعديل</button>
+        <button class="chip-btn ${f.role==='viewer'?'active':''}" onclick="selectNewUserRole('viewer')">رؤية فقط</button>
+      </div>
+    </div>
+    ${state.addUserError ? `<div class="warn-box">${esc(state.addUserError)}</div>` : ""}
+  `;
+}
+
+async function submitAddUser() {
+  if (!isAdmin()) return;
+  syncAddUserFormFromInputs();
+  const username = (state.newUserForm.username || "").trim().toLowerCase();
+  const password = state.newUserForm.password || "";
+  const role = state.newUserForm.role || "editor";
+  if (!username || !password) { state.addUserError = "اكتب اسم المستخدم وكلمة المرور"; render(); return; }
+  if (password.length < 6) { state.addUserError = "كلمة المرور لازم تكون 6 أحرف على الأقل"; render(); return; }
+  state.addUserError = null;
+  state.addUserBusy = true;
+  render();
+  const email = username + LOGIN_EMAIL_DOMAIN;
+  const secondaryName = "Secondary_" + Date.now();
+  let secondaryApp = null;
+  try {
+    // بنستخدم Firebase app تانية عشان إنشاء المستخدم الجديد ميعملش تسجيل خروج للأدمن الحالي
+    secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, secondaryName);
+    const cred = await secondaryApp.auth().createUserWithEmailAndPassword(email, password);
+    const uid = cred.user.uid;
+    await db.collection("users").doc(uid).set({
+      username, role, disabled: false, createdAt: Date.now(),
+      createdBy: state.userProfile?.username || "",
+    });
+    await secondaryApp.auth().signOut();
+    await secondaryApp.delete();
+    state.addUserBusy = false;
+    state.sheet = null;
+    state.newUserForm = null;
+    loadUsersList();
+  } catch (err) {
+    console.error("create user failed", err);
+    if (secondaryApp) { try { await secondaryApp.delete(); } catch(e) {} }
+    const map = {
+      "auth/email-already-in-use": "اسم المستخدم ده متسجل بالفعل، اختار اسم تاني.",
+      "auth/weak-password": "كلمة المرور ضعيفة، لازم تكون 6 أحرف على الأقل.",
+      "auth/invalid-email": "اسم المستخدم فيه رمز مش مسموح.",
+      "auth/operation-not-allowed": "إنشاء مستخدمين جداد مش مفعّل في إعدادات Firebase.",
+      "auth/network-request-failed": "مفيش اتصال بالإنترنت.",
+    };
+    state.addUserError = map[err.code] || `حصل خطأ (${err.code || "غير معروف"}): ${err.message || ""}`;
+    state.addUserBusy = false;
+    render();
+  }
+}
+
+function toggleUserRole(id) {
+  if (!isAdmin()) return;
+  const u = state.usersList.find(x => x.id === id);
+  if (!u) return;
+  if (u.role === "admin") { alert("مينفعش تغيّر صلاحية الأدمن من هنا."); return; }
+  const next = u.role === "editor" ? "viewer" : "editor";
+  db.collection("users").doc(u.id).update({ role: next })
+    .then(() => loadUsersList())
+    .catch(err => alert("فشل تعديل الصلاحية: " + (err.message||err)));
+}
+function toggleUserDisabled(id) {
+  if (!isAdmin()) return;
+  const u = state.usersList.find(x => x.id === id);
+  if (!u) return;
+  if (u.role === "admin") { alert("مينفعش تعطّل حساب الأدمن."); return; }
+  const next = !u.disabled;
+  if (!confirm(next ? `تعطيل حساب "${u.username}"؟` : `تفعيل حساب "${u.username}"؟`)) return;
+  db.collection("users").doc(u.id).update({ disabled: next })
+    .then(() => loadUsersList())
+    .catch(err => alert("فشل تعديل الحساب: " + (err.message||err)));
+}
+
 function logout() {
   if (!confirm("تسجيل الخروج؟")) return;
   (state.unsubscribers || []).forEach(u => { try { u(); } catch(e) {} });
@@ -708,6 +906,9 @@ function logout() {
   state.walletNamesReady = false;
   state.dayReady = false;
   state.connectionError = null;
+  state.userProfile = null;
+  state.userProfileReady = false;
+  state.usersList = [];
   firebase.auth().signOut();
 }
 
@@ -862,9 +1063,10 @@ function renderHeader(profit) {
             <div class="app-header-profit-label">مكسب اليوم</div>
             <div class="app-header-profit-value num">${money(profit)} <span style="font-size:11px;font-weight:400;">ج.م</span></div>
           </div>
+          ${canEdit() ? `
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:rgba(242,236,218,0.12); border-radius:10px;">
             ${icon("rotate-ccw", {size:17, color:"var(--paper)"})}
-          </button>` : ""}
+          </button>` : ""}` : ""}
       </div>
     </div>
   `;
@@ -896,12 +1098,22 @@ function setTab(t) {
   state.viewDate = null;
   if (t === "archive") {
     state.archiveLoading = true;
+    state.archiveError = null;
     render();
     fetchArchiveList().then(list => {
       state.archiveIndex = list;
       state.archiveLoading = false;
       render();
+    }).catch(err => {
+      console.error("fetchArchiveList failed", err);
+      state.archiveError = `تعذر تحميل الأرشيف: ${err.code || ""} ${err.message || err}`;
+      state.archiveLoading = false;
+      render();
     });
+    return;
+  }
+  if (t === "services" && isAdmin()) {
+    loadUsersList();
     return;
   }
   render();
@@ -1038,7 +1250,9 @@ function renderTodayView(live) {
         <div class="empty-state-icon">${icon("store", {size:28, color:"var(--ink-60)"})}</div>
         <div class="empty-state-title">لسه اليوم مبدأش</div>
         <div class="empty-state-desc">سجّل الأرصدة الافتتاحية للدرج والمحافظ عشان تبدأ تسجيل المعاملات</div>
-        <button class="primary-btn" onclick="openStartSheet()">بدء اليوم</button>
+        ${canEdit()
+          ? `<button class="primary-btn" onclick="openStartSheet()">بدء اليوم</button>`
+          : `<div class="balance-collapsed-hint">حسابك (رؤية فقط) — استنى الأدمن يبدأ اليوم</div>`}
       </div>
     `;
   }
@@ -1046,10 +1260,10 @@ function renderTodayView(live) {
   const closed = d.status === "closed";
   const txHtml = d.transactions.length === 0
     ? `<div class="tx-list-empty">لسه معملتش أي معاملة النهاردة</div>`
-    : [...d.transactions].reverse().map(t => renderTxRow(t, true)).join("");
+    : [...d.transactions].reverse().map(t => renderTxRow(t, canEdit())).join("");
 
   return `
-    ${closed && d.closing ? renderClosedStamp(d.closing, live) : ""}
+    ${closed && d.closing ? renderClosedStamp(d.closing, live, d.closedBy) : ""}
     ${closed ? `
       <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:16px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.today, state.dayData)">
         ${icon("download",{size:16})} تحميل PDF
@@ -1061,7 +1275,7 @@ function renderTodayView(live) {
       <div class="tx-list-count">${d.transactions.length} معاملة</div>
     </div>
     <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
-    ${!closed ? `
+    ${(!closed && canEdit()) ? `
       <div class="action-bar">
         <div class="action-bar-inner">
           <button class="action-bar-add" onclick="openTxSheet(null)">${icon("plus",{size:17})} معاملة جديدة</button>
@@ -1108,7 +1322,7 @@ function renderTxRow(tx, editable) {
       </div>
       <div class="tx-row-body">
         <div class="tx-row-title">${title}</div>
-        <div class="tx-row-sub">${tx.time}${tx.note ? ` · ${esc(tx.note)}` : ""}</div>
+        <div class="tx-row-sub">${tx.time}${tx.createdBy ? ` · ${esc(tx.createdBy)}` : ""}${tx.note ? ` · ${esc(tx.note)}` : ""}</div>
       </div>
       <div class="tx-row-amt">
         <div class="tx-row-amt-val num">${money(tx.amount)}</div>
@@ -1124,7 +1338,7 @@ function renderTxRow(tx, editable) {
   `;
 }
 
-function renderClosedStamp(closing, live) {
+function renderClosedStamp(closing, live, closedBy) {
   const machineDiffs = state.machines.map(m => {
     const subs = machineSubs(m);
     if (subs) return subs.map(s => machineBalValue(closing.machines?.[m.id], s) - machineBalValue(live.machines?.[m.id], s));
@@ -1147,7 +1361,7 @@ function renderClosedStamp(closing, live) {
         ${icon(matched ? "check-circle-2" : "alert-triangle", {size:17})}
         ${matched ? "مطابق" : "فيه فرق"}
       </div>
-      <div class="closed-stamp-sub">اليوم مقفول</div>
+      <div class="closed-stamp-sub">اليوم مقفول${closedBy ? ` · بواسطة ${esc(closedBy)}` : ""}</div>
       ${!matched ? `<div class="closed-stamp-diff">إجمالي الفرق: <span class="num" style="font-weight:700;color:var(--rust);">${money(totalDiff)}</span> ج.م</div>` : ""}
     </div>
   `;
@@ -1174,7 +1388,7 @@ async function downloadDayPDF(dayKey, dayData) {
       <div style="font-family:'Cairo',sans-serif; font-weight:800; font-size:20px; margin-bottom:4px;">دفتر المحل — تقرير يوم</div>
       <div style="font-size:13px; color:#5a6b70; margin-bottom:18px;">${displayDate(dayKey)}${dayData.closedAt ? " · اتقفل الساعة " + dayData.closedAt : ""}</div>
       <div style="font-size:14.5px; font-weight:700; margin-bottom:16px;">مكسب اليوم: <span class="num" style="font-family:'JetBrains Mono',monospace;">${money(profitTotal)}</span> ج.م</div>
-      ${dayData.status === "closed" && dayData.closing ? renderClosedStamp(dayData.closing, live) : ""}
+      ${dayData.status === "closed" && dayData.closing ? renderClosedStamp(dayData.closing, live, dayData.closedBy) : ""}
       ${renderBalancesGrid(live)}
       <div class="section-title">المعاملات (${txs.length})</div>
       <div class="tx-list-box ${txs.length ? '' : 'empty'}">
@@ -1212,6 +1426,7 @@ async function downloadDayPDF(dayKey, dayData) {
 }
 
 function confirmDeleteTx(id) {
+  if (!requireEdit()) return;
   if (confirm("تأكيد حذف المعاملة؟")) {
     const tx = state.dayData.transactions.find(t => t.id === id);
     state.dayData = { ...state.dayData, transactions: state.dayData.transactions.filter(t => t.id !== id) };
@@ -1224,9 +1439,10 @@ function confirmDeleteTx(id) {
 function attachTodayEvents() { /* using inline onclick handlers, nothing extra needed */ }
 
 /* ---------------- Start Day Sheet ---------------- */
-function openStartSheet() { state.sheet = "start"; render(); }
+function openStartSheet() { if (!requireEdit()) return; state.sheet = "start"; render(); }
 
 function confirmStartNewDay() {
+  if (!requireEdit()) return;
   if (state.dayData.status === "not_started") {
     openStartSheet();
     return;
@@ -1303,6 +1519,7 @@ function renderStartSheet() {
 }
 
 function submitStartDay() {
+  if (!requireEdit()) return;
   if (state.dayData.status !== "not_started" && (state.dayData.transactions || []).length > 0) {
     if (!confirm("فيه معاملات مسجلة بالفعل النهاردة! لو كملت هيتمسحوا نهائيًا. متأكد؟")) return;
   }
@@ -1323,7 +1540,7 @@ function submitStartDay() {
     })),
     islamBalance: num(document.getElementById("sd-islam").value),
   };
-  const nd = { ...emptyDay(), status: "open", opening };
+  const nd = { ...emptyDay(), status: "open", opening, openedBy: state.userProfile?.username || "" };
   state.dayData = nd;
   persistDay(state.today, nd);
   state.sheet = null;
@@ -1332,6 +1549,7 @@ function submitStartDay() {
 
 /* ---------------- Edit Opening Balances Sheet ---------------- */
 function openEditOpeningSheet() {
+  if (!requireEdit()) return;
   if (state.dayData.status === "not_started") {
     alert("لسه اليوم مبدأش. استخدم زرار «بدء اليوم» الأول عشان تسجّل الأرصدة الافتتاحية.");
     return;
@@ -1399,6 +1617,7 @@ function renderEditOpeningSheet() {
 }
 
 function submitEditOpening() {
+  if (!requireEdit()) return;
   const opening = {
     drawer: num(document.getElementById("eo-drawer").value),
     machineDrawer: num(document.getElementById("eo-machineDrawer").value),
@@ -1427,6 +1646,7 @@ function submitEditOpening() {
 
 /* ---------------- Transaction Sheet ---------------- */
 function openTxSheet(txId) {
+  if (!requireEdit()) return;
   const initial = txId ? state.dayData.transactions.find(t => t.id === txId) : null;
   state.txForm = {
     id: initial?.id || null,
@@ -1649,6 +1869,7 @@ function validateMachineBalances(newTxs) {
 }
 
 function submitTx() {
+  if (!requireEdit()) return;
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
@@ -1660,6 +1881,7 @@ function submitTx() {
   if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص اللي المبلغ خرج له."); return; }
   if (f.category === "cash" && !destTrimmed) { alert("اكتب اسم المودع."); return; }
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+  const currentUsername = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "";
   const tx = {
     id: f.id, time: f.time, category: f.category,
     subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : f.subtype)),
@@ -1670,6 +1892,8 @@ function submitTx() {
     amount: num(f.amount),
     profit: (f.category === "expense" || f.category === "cash") ? 0 : (num(f.profit) || 0),
     note: (f.note||"").trim(),
+    createdBy: oldTx?.createdBy || currentUsername,
+    editedBy: oldTx ? currentUsername : undefined,
   };
   Object.keys(tx).forEach(k => { if (tx[k] === undefined) delete tx[k]; });
   let txs;
@@ -1695,7 +1919,7 @@ function submitTx() {
 
 
 /* ---------------- Close Day Sheet ---------------- */
-function openCloseSheet() { state.sheet = "close"; render(); }
+function openCloseSheet() { if (!requireEdit()) return; state.sheet = "close"; render(); }
 
 function closeRowInputChanged(kind, id, sub) {
   const live = computeLive(state.dayData);
@@ -1762,6 +1986,7 @@ function renderCloseSheetBody() {
 }
 
 function submitCloseDay() {
+  if (!requireEdit()) return;
   const closing = {
     drawer: num(document.getElementById("cd-drawer").value),
     machineDrawer: num(document.getElementById("cd-machineDrawer").value),
@@ -1779,14 +2004,14 @@ function submitCloseDay() {
     })),
     islamBalance: num(document.getElementById("cd-islam").value),
   };
-  state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow() };
+  state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow(), closedBy: state.userProfile?.username || "" };
   persistDay(state.today, state.dayData);
   state.sheet = null;
   render();
 }
 
 /* ---------------- Add Machine Sheet ---------------- */
-function openAddMachineSheet() { state.sheet = "addMachine"; render(); }
+function openAddMachineSheet() { if (!requireEdit()) return; state.sheet = "addMachine"; render(); }
 
 function renderAddMachineSheetBody() {
   return `
@@ -1802,6 +2027,7 @@ function updateAddMachineBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddMachine() {
+  if (!requireEdit()) return;
   const name = document.getElementById("am-name").value.trim();
   if (!name) return;
   state.machines = [...state.machines, { id: genId(), name }];
@@ -1836,6 +2062,11 @@ function renderSheet() {
     title = "تعديل الأرصدة الافتتاحية";
     body = renderEditOpeningSheet();
     footer = `<button class="primary-btn" onclick="submitEditOpening()">حفظ التعديل</button>`;
+  } else if (state.sheet === "addUser") {
+    title = "إضافة مستخدم جديد";
+    body = renderAddUserSheetBody();
+    const valid = state.newUserForm && (state.newUserForm.username||"").trim() && (state.newUserForm.password||"").length >= 6;
+    footer = `<button class="primary-btn" id="au-submit-btn" onclick="submitAddUser()" ${valid ? "" : "disabled"}>${state.addUserBusy ? "جاري الإضافة..." : "إضافة المستخدم"}</button>`;
   }
 
   return `
@@ -1868,6 +2099,13 @@ function renderArchiveView() {
   if (state.archiveLoading) {
     return `<div class="archive-title">الأرشيف</div><div class="archive-empty">جاري التحميل...</div>`;
   }
+  if (state.archiveError) {
+    return `
+      <div class="archive-title">الأرشيف</div>
+      <div class="warn-box" style="margin-bottom:12px;">${esc(state.archiveError)}</div>
+      <button class="primary-btn" style="width:auto; padding:11px 22px;" onclick="setTab('archive')">إعادة المحاولة</button>
+    `;
+  }
   const past = state.archiveIndex.filter(d => d !== state.today);
   if (past.length === 0) {
     return `<div class="archive-title">الأرشيف</div><div class="archive-empty">مفيش أيام سابقة لسه</div>`;
@@ -1888,15 +2126,26 @@ function renderArchiveView() {
 function openArchiveDay(d) {
   state.viewDate = d;
   state.archiveDayData = null;
+  state.archiveDetailError = null;
   render();
   fetchArchiveDay(d).then(data => {
     state.archiveDayData = data || emptyDay();
+    render();
+  }).catch(err => {
+    console.error("fetchArchiveDay failed", err);
+    state.archiveDetailError = `تعذر تحميل بيانات اليوم: ${err.code || ""} ${err.message || err}`;
     render();
   });
 }
 
 function renderArchiveDetail() {
   const d = state.archiveDayData;
+  if (state.archiveDetailError) {
+    return `
+      <button class="archive-back-btn" onclick="backToArchiveList()">${icon("chevron-right",{size:16})} رجوع للأرشيف</button>
+      <div class="warn-box">${esc(state.archiveDetailError)}</div>
+    `;
+  }
   if (!d) return `<div style="text-align:center;padding:40px;color:var(--ink-40);">جاري التحميل...</div>`;
   const live = computeLive(d);
   const profitTotal = (d.transactions||[]).reduce((a,t)=>a+num(t.profit),0);
@@ -1908,7 +2157,7 @@ function renderArchiveDetail() {
     <button class="archive-back-btn" onclick="backToArchiveList()">${icon("chevron-right",{size:16})} رجوع للأرشيف</button>
     <div class="archive-detail-title">${displayDate(state.viewDate)}</div>
     <div class="archive-detail-sub">مكسب اليوم: <span class="num" style="font-weight:700;">${money(profitTotal)}</span> ج.م · ${d.transactions.length} معاملة</div>
-    ${d.status === "closed" && d.closing ? renderClosedStamp(d.closing, live) : ""}
+    ${d.status === "closed" && d.closing ? renderClosedStamp(d.closing, live, d.closedBy) : ""}
     ${d.status === "closed" ? `
       <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:16px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.viewDate, state.archiveDayData)">
         ${icon("download",{size:16})} تحميل PDF
@@ -1927,9 +2176,21 @@ function backToArchiveList() { state.viewDate = null; state.archiveDayData = nul
 
 /* ---------------- Services ---------------- */
 function renderServicesView() {
+  const editable = canEdit();
   let html = `
+    <div class="services-list" style="margin-bottom:20px;">
+      <div class="services-row">
+        ${icon("user",{size:16,color:"var(--ink-60)"})}
+        <div style="flex:1;">
+          <div class="services-row-name">${esc(state.userProfile?.username || (state.authUser?.email||"").split("@")[0])}</div>
+          <div style="font-size:11.5px; color:var(--ink-60); margin-top:2px;">الصلاحية: ${esc(roleLabel(state.userProfile?.role))}</div>
+        </div>
+      </div>
+    </div>
+
     <div class="archive-title">إدارة اليوم</div>
     <div class="services-list" style="margin-bottom:20px;">
+      ${editable ? `
       <div class="services-row" style="cursor:pointer;" onclick="openEditOpeningSheet()">
         ${icon("pencil",{size:16,color:"var(--ink-60)"})}
         <div class="services-row-name">تعديل الأرصدة الافتتاحية لليوم</div>
@@ -1940,6 +2201,12 @@ function renderServicesView() {
         <div class="services-row-name" style="color:var(--rust);">بدء يوم جديد (إعادة تعيين)</div>
         ${icon("chevron-left",{size:15,color:"var(--ink-40)"})}
       </div>
+      ` : `
+      <div class="services-row">
+        ${icon("eye",{size:16,color:"var(--ink-40)"})}
+        <div class="services-row-name" style="color:var(--ink-40);">حسابك (رؤية فقط) — مفيش صلاحية تعديل</div>
+      </div>
+      `}
       <div class="services-row" style="cursor:pointer;" onclick="logout()">
         ${icon("log-out",{size:16,color:"var(--ink-60)"})}
         <div class="services-row-name">تسجيل الخروج</div>
@@ -1956,7 +2223,7 @@ function renderServicesView() {
             <input class="services-row-input" id="wallet-edit-input" value="${esc(state.walletNames[id])}"
               autofocus onblur="saveWalletName('${id}')" onkeydown="if(event.key==='Enter'){this.blur();}">
           ` : `<div class="services-row-name">${esc(state.walletNames[id])}</div>`}
-          ${state.editingWalletId !== id ? `
+          ${(editable && state.editingWalletId !== id) ? `
             <button class="icon-btn" onclick="startEditWallet('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>
           ` : ""}
         </div>
@@ -1987,7 +2254,7 @@ function renderServicesView() {
             <button class="chip-btn small" style="flex:none; background:var(--ink); color:var(--paper); border-color:var(--ink);" onclick="saveWalletLimitUsed('${id}')">حفظ</button>
           ` : `
             <div class="num" style="font-weight:700; font-size:13.5px;">${money(used)}</div>
-            <button class="icon-btn" onclick="startEditWalletLimit('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>
+            ${editable ? `<button class="icon-btn" onclick="startEditWalletLimit('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>` : ""}
           `}
         </div>
       `;
@@ -1996,23 +2263,57 @@ function renderServicesView() {
 
     <div class="services-header-row">
       <div class="archive-title" style="margin-bottom:0;">مكن الشحن</div>
-      <button class="add-btn" onclick="openAddMachineSheet()">${icon("plus",{size:15})} إضافة</button>
+      ${editable ? `<button class="add-btn" onclick="openAddMachineSheet()">${icon("plus",{size:15})} إضافة</button>` : ""}
     </div>
-    <div class="services-list">
+    <div class="services-list" style="margin-bottom:20px;">
       ${state.machines.length === 0 ? `<div class="services-empty">لسه مفيش مكن مضافة</div>` : state.machines.map(m => `
         <div class="services-row">
           ${icon("landmark",{size:16,color:"var(--ink-60)"})}
           <div class="services-row-name">${esc(m.name)}</div>
-          <button class="icon-btn" onclick="confirmDeleteMachine('${m.id}', '${esc(m.name).replace(/'/g,"\\'")}')">${icon("trash-2",{size:15,color:"var(--rust)"})}</button>
+          ${editable ? `<button class="icon-btn" onclick="confirmDeleteMachine('${m.id}', '${esc(m.name).replace(/'/g,"\\'")}')">${icon("trash-2",{size:15,color:"var(--rust)"})}</button>` : ""}
         </div>
       `).join("")}
     </div>
+
+    ${isAdmin() ? renderUsersSection() : ""}
   `;
   return html;
 }
 
-function startEditWallet(id) { state.editingWalletId = id; render(); }
+function renderUsersSection() {
+  const rows = state.usersListLoading
+    ? `<div class="services-empty">جاري التحميل...</div>`
+    : (state.usersList.length === 0
+        ? `<div class="services-empty">لسه مفيش مستخدمين تانيين</div>`
+        : state.usersList.map(u => `
+            <div class="services-row" style="align-items:flex-start; flex-wrap:wrap; row-gap:8px;">
+              ${icon("user",{size:16,color: u.disabled ? "var(--ink-40)" : "var(--ink-60)"})}
+              <div style="flex:1; min-width:130px;">
+                <div class="services-row-name" style="${u.disabled?'color:var(--ink-40);text-decoration:line-through;':''}">${esc(u.username)}</div>
+                <div style="font-size:11.5px; color:var(--ink-60); margin-top:3px;">
+                  ${esc(roleLabel(u.role))}${u.disabled ? " · معطّل" : ""}
+                </div>
+              </div>
+              ${u.role !== "admin" ? `
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <button class="chip-btn small" onclick="toggleUserRole('${u.id}')">${u.role === "editor" ? "رؤية فقط" : "رؤية وتعديل"}</button>
+                  <button class="icon-btn" title="${u.disabled?'تفعيل':'تعطيل'}" onclick="toggleUserDisabled('${u.id}')">${icon(u.disabled?"check-circle-2":"trash-2",{size:15,color: u.disabled ? "var(--emerald)" : "var(--rust)"})}</button>
+                </div>
+              ` : `<div style="font-size:11px;color:var(--ink-40);">حساب أساسي</div>`}
+            </div>
+          `).join(""));
+  return `
+    <div class="services-header-row">
+      <div class="archive-title" style="margin-bottom:0;">إدارة المستخدمين</div>
+      <button class="add-btn" onclick="openAddUserSheet()">${icon("plus",{size:15})} إضافة مستخدم</button>
+    </div>
+    <div class="services-list" style="margin-bottom:20px;">${rows}</div>
+  `;
+}
+
+function startEditWallet(id) { if (!requireEdit()) return; state.editingWalletId = id; render(); }
 function saveWalletName(id) {
+  if (!requireEdit()) { state.editingWalletId = null; render(); return; }
   const el = document.getElementById("wallet-edit-input");
   const name = el ? el.value.trim() : "";
   if (name) {
@@ -2022,8 +2323,9 @@ function saveWalletName(id) {
   state.editingWalletId = null;
   render();
 }
-function startEditWalletLimit(id) { state.editingWalletLimitId = id; render(); }
+function startEditWalletLimit(id) { if (!requireEdit()) return; state.editingWalletLimitId = id; render(); }
 function saveWalletLimitUsed(id) {
+  if (!requireEdit()) { state.editingWalletLimitId = null; render(); return; }
   const el = document.getElementById("wl-limit-input-" + id);
   const used = el ? num(el.value) : num(state.walletLimits[id]);
   state.walletLimits = { ...state.walletLimits, [id]: used };
@@ -2032,6 +2334,7 @@ function saveWalletLimitUsed(id) {
   render();
 }
 function confirmDeleteMachine(id, name) {
+  if (!requireEdit()) return;
   if (confirm(`حذف "${name}"؟`)) {
     state.machines = state.machines.filter(m => m.id !== id);
     saveMachines(state.machines);
