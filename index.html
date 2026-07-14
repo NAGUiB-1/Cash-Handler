@@ -535,12 +535,38 @@ function computeLive(dayData){
     } else if (t.category === "cash") {
       drawer += amt;
     } else if (t.category === "machineDebt") {
-      // ✦ NEW: إضافة مديونية على مكينة
+      // ✦ NEW: إضافة مديونية على مكينة + زيادة رصيد المكينة بنفس المبلغ
       machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) + amt;
+      const debtMachine = state.machines.find(mm => mm.id === t.machineId);
+      const debtSubs = machineSubs(debtMachine);
+      if (debtSubs) {
+        // فوري: يتحط في "مدفوعات"
+        const cur = machines[t.machineId];
+        const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+        obj["مدفوعات"] = (obj["مدفوعات"] || 0) + amt;
+        machines[t.machineId] = obj;
+      } else {
+        // باقي المكن: رصيد عادي
+        machines[t.machineId] = (machines[t.machineId] || 0) + amt;
+      }
     } else if (t.category === "machineDebtPayment") {
       // ✦ NEW: سداد مديونية مكينة من الدرج (كاش)
       drawer -= amt;
       machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - amt;
+    } else if (t.category === "fawrySettlement") {
+      // ✦ NEW: تسوية فوري — المندوب بياخد كاش قد "مدفوعات" وبيدّي كاش قد "فيزا"، وممكن يزود رصيد "مدفوعات"
+      const paidFromMadfoat = num(t.fawryPaidFromMadfoat);   // المبلغ المسدد (المأخوذ) من المدفوعات
+      const paidFromVisa = num(t.fawryPaidFromVisa);         // المبلغ المدفوع من الفيزا
+      const topUpMadfoat = num(t.fawryTopUpMadfoat);         // مبلغ إضافي يتزود على المدفوعات
+      drawer += (-paidFromMadfoat + paidFromVisa - topUpMadfoat);
+      const cur = machines[t.machineId];
+      const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+      obj["مدفوعات"] = (obj["مدفوعات"] || 0) + paidFromMadfoat + topUpMadfoat;
+      obj["فيزا"] = (obj["فيزا"] || 0) - paidFromVisa;
+      machines[t.machineId] = obj;
+      // ✦ NEW: ربط المبلغ المسدد بسداد مديونية فوري (لو مفعّل)
+      const debtReduction = num(t.fawryDebtReduction);
+      if (debtReduction > 0) machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - debtReduction;
     }
   });
   return { drawer, machineDrawer, wallets, instapay, instapayAccounts, machines, islamBalance, machineDebts };
@@ -1425,6 +1451,15 @@ function renderTxRow(tx, editable) {
     const m = state.machines.find(mm => mm.id === tx.machineId);
     iconName = "check-circle-2"; color = "var(--emerald)";
     title = `سداد مديونية (المكن) · ${esc(m ? m.name : "—")}`;
+  } else if (tx.category === "fawrySettlement") {
+    const m = state.machines.find(mm => mm.id === tx.machineId);
+    iconName = "landmark"; color = "var(--gold)";
+    const parts = [];
+    if (num(tx.fawryPaidFromMadfoat) > 0) parts.push(`مسدد من المدفوعات ${money(num(tx.fawryPaidFromMadfoat))}`);
+    if (num(tx.fawryPaidFromVisa) > 0) parts.push(`مدفوع للفيزا ${money(num(tx.fawryPaidFromVisa))}`);
+    if (num(tx.fawryTopUpMadfoat) > 0) parts.push(`زيادة مدفوعات ${money(num(tx.fawryTopUpMadfoat))}`);
+    if (num(tx.fawryDebtReduction) > 0) parts.push(`سداد مديونية فوري ${money(num(tx.fawryDebtReduction))}`);
+    title = `تسوية فوري · ${esc(m ? m.name : "—")}${parts.length ? " · " + esc(parts.join(" / ")) : ""}`;
   } else {
     const m = state.machines.find(m=>m.id===tx.machineId);
     if (tx.machineSub === "فيزا") { iconName = "arrow-up-circle"; color = "var(--steel)"; }
@@ -1796,6 +1831,10 @@ function openTxSheet(txId) {
     amount: initial?.amount ?? "",
     profit: initial?.profit ?? "",
     commission: initial?.commission ?? "",  // ✦ NEW
+    fawryPaidFromMadfoat: initial?.fawryPaidFromMadfoat ?? "", // ✦ NEW
+    fawryPaidFromVisa: initial?.fawryPaidFromVisa ?? "",       // ✦ NEW
+    fawryTopUpMadfoat: initial?.fawryTopUpMadfoat ?? "",       // ✦ NEW
+    fawryReduceDebt: initial ? (num(initial.fawryDebtReduction) > 0) : true,  // ✦ NEW: يعكس القيمة المحفوظة عند التعديل
     note: initial?.note ?? "",
   };
   state.sheet = "tx";
@@ -1816,6 +1855,49 @@ function txSelectMachine(id) {
 function txSelectMachineSub(sub) { syncTxFormFromInputs(); state.txForm.machineSub = sub; refreshSheetOnly(); }
 function txSelectDebtMachine(id) { syncTxFormFromInputs(); state.txForm.debtMachineId = id; refreshSheetOnly(); }
 
+/* ✦ NEW: نص المعاينة لتأثير تسوية فوري على الدرج (كاش) */
+function fawrySettlementPreviewText(f) {
+  const paid = num(f.fawryPaidFromMadfoat);
+  const visa = num(f.fawryPaidFromVisa);
+  const topUp = num(f.fawryTopUpMadfoat);
+  if (!paid && !visa && !topUp) return "هيتأثر الدرج (كاش) حسب المبالغ اللي هتكتبها فوق.";
+  const netChange = -paid + visa - topUp;
+  const sign = netChange > 0 ? "+" : "";
+  return `الدرج (كاش) هيتغيّر بمقدار: <span class="num" style="font-weight:700;color:${netChange<0?'var(--rust)':'var(--emerald)'};">${sign}${money(netChange)}</span> ج.م`;
+}
+
+/* ✦ NEW: هل نعرض ربط "المبلغ المسدد من المدفوعات" بسداد مديونية فوري؟ */
+function fawryDebtLinkHtml(f) {
+  const live = computeLive(state.dayData);
+  const curFawryDebt = num(live.machineDebts?.[f.debtMachineId]);
+  const paid = num(f.fawryPaidFromMadfoat);
+  if (curFawryDebt <= 0.005 || paid <= 0) return "";
+  const reduceAmount = Math.min(paid, curFawryDebt);
+  const checked = f.fawryReduceDebt !== false; // افتراضيًا مفعّل
+  return `
+    <label style="display:flex; align-items:flex-start; gap:8px; margin-top:8px; font-size:12.5px; color:var(--ink-60); cursor:pointer;">
+      <input type="checkbox" id="fs-reduce-debt" style="margin-top:2px;" ${checked ? "checked" : ""} onchange="toggleFawryReduceDebt()">
+      <span>هل تريد إزالة مديونية فوري بقيمة <span class="num" style="font-weight:700; color:var(--ink);">${money(reduceAmount)}</span> ج.م؟</span>
+    </label>
+  `;
+}
+function toggleFawryReduceDebt() {
+  const el = document.getElementById("fs-reduce-debt");
+  state.txForm.fawryReduceDebt = el ? el.checked : true;
+}
+
+function updateFawrySettlementPreview() {
+  const f = state.txForm;
+  const get = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+  f.fawryPaidFromMadfoat = get("fs-madfoat");
+  f.fawryPaidFromVisa = get("fs-visa");
+  f.fawryTopUpMadfoat = get("fs-topup");
+  const out = document.getElementById("fawry-settlement-preview");
+  if (out) out.innerHTML = fawrySettlementPreviewText(f);
+  const linkWrap = document.getElementById("fawry-debt-link-wrap");
+  if (linkWrap) linkWrap.innerHTML = fawryDebtLinkHtml(f);
+}
+
 /* ✦ NEW: تحديث لحظي للمتبقي من مديونية المكينة عند سداد المديونية */
 function updateDebtPaymentRemaining(curDebt) {
   const el = document.getElementById("tx-amount");
@@ -1834,6 +1916,11 @@ function syncTxFormFromInputs() {
   if (get("tx-commission") !== undefined) state.txForm.commission = get("tx-commission"); // ✦ NEW
   if (get("tx-note") !== undefined) state.txForm.note = get("tx-note");
   if (get("tx-destination") !== undefined) state.txForm.destination = get("tx-destination");
+  if (get("fs-madfoat") !== undefined) state.txForm.fawryPaidFromMadfoat = get("fs-madfoat"); // ✦ NEW
+  if (get("fs-visa") !== undefined) state.txForm.fawryPaidFromVisa = get("fs-visa"); // ✦ NEW
+  if (get("fs-topup") !== undefined) state.txForm.fawryTopUpMadfoat = get("fs-topup"); // ✦ NEW
+  const reduceEl = document.getElementById("fs-reduce-debt");
+  if (reduceEl) state.txForm.fawryReduceDebt = reduceEl.checked; // ✦ NEW
 }
 
 function renderTxSheetBody() {
@@ -1844,7 +1931,7 @@ function renderTxSheetBody() {
     <div class="field">
       <div class="field-label">الخدمة</div>
       <div class="chip-row wrap">
-        ${[["vodafone","فودافون كاش"],["instapay","انستاباي"],["machine","شحن مكن"],["islam","حساب إسلام"],["cash","نقدية"],["expense","خوارج"],["machineDebt","مديونية (المكن)"],["machineDebtPayment","سداد مديونية (المكن)"]].map(([k,l]) => `
+        ${[["vodafone","فودافون كاش"],["instapay","انستاباي"],["machine","شحن مكن"],["islam","حساب إسلام"],["cash","نقدية"],["expense","خوارج"],["machineDebt","مديونية (المكن)"],["machineDebtPayment","سداد مديونية (المكن)"],["fawrySettlement","تسوية فوري"]].map(([k,l]) => `
           <button class="chip-btn small ${f.category===k?'active':''}" onclick="txSelectCategory('${k}')">${l}</button>
         `).join("")}
       </div>
@@ -1937,6 +2024,7 @@ function renderTxSheetBody() {
     if (state.machines.length === 0) {
       html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الخدمات" وضيف المكينة الأول.</div>`;
     } else {
+      if (!f.debtMachineId) f.debtMachineId = state.machines[0].id;
       html += `
         <div class="field">
           <div class="field-label">المكينة</div>
@@ -1946,10 +2034,17 @@ function renderTxSheetBody() {
             `).join("")}
           </div>
         </div>
-        <div class="info-box">هيتضاف المبلغ كمديونية على المكينة دي، من غير أي تأثير على الدرج.</div>
       `;
+      const live = computeLive(state.dayData);
+      const debtSelMachine = state.machines.find(m => m.id === f.debtMachineId);
+      const debtSubs = machineSubs(debtSelMachine);
+      const curDebt = num(live.machineDebts?.[f.debtMachineId]);
+      const curBal = debtSubs ? machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات") : machineBalValue(live.machines?.[f.debtMachineId]);
+      const balLabel = debtSubs ? "رصيد المدفوعات الحالي" : "رصيد المكينة الحالي";
+      html += `<div class="info-box">المديونية الحالية: <span class="num" style="font-weight:700;">${money(curDebt)}</span> ج.م · ${balLabel}: <span class="num" style="font-weight:700;">${money(curBal)}</span> ج.م<br>المبلغ هيتسجل كمديونية على المكينة دي، وهيتضاف بنفس القيمة ${debtSubs ? "لرصيد المدفوعات" : "لرصيد المكينة"} (من غير أي تأثير على الدرج).</div>`;
     }
   }
+
 
   /* ✦ NEW: سداد مديونية مكينة */
   if (f.category === "machineDebtPayment") {
@@ -1979,6 +2074,49 @@ function renderTxSheetBody() {
     }
   }
 
+  /* ✦ NEW: تسوية فوري */
+  if (f.category === "fawrySettlement") {
+    const fawryMachines = state.machines.filter(m => machineSubs(m));
+    if (fawryMachines.length === 0) {
+      html += `<div class="warn-box">لسه مفيش مكينة "فوري" مضافة. روح لتاب "الخدمات" وضيفها الأول.</div>`;
+    } else {
+      if (!f.debtMachineId || !fawryMachines.some(m => m.id === f.debtMachineId)) f.debtMachineId = fawryMachines[0].id;
+      if (fawryMachines.length > 1) {
+        html += `
+          <div class="field">
+            <div class="field-label">المكينة</div>
+            <div class="chip-row wrap">
+              ${fawryMachines.map(m => `
+                <button class="chip-btn small ${f.debtMachineId===m.id?'active':''}" onclick="txSelectDebtMachine('${m.id}')">${esc(m.name)}</button>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }
+      const live = computeLive(state.dayData);
+      const curMadfoat = machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات");
+      const curVisa = machineBalValue(live.machines?.[f.debtMachineId], "فيزا");
+      const curFawryDebt = num(live.machineDebts?.[f.debtMachineId]);
+      html += `<div class="info-box">رصيد "مدفوعات" الحالي: <span class="num" style="font-weight:700;">${money(curMadfoat)}</span> ج.م · رصيد "فيزا" الحالي: <span class="num" style="font-weight:700;">${money(curVisa)}</span> ج.م${curFawryDebt > 0.005 ? ` · مديونية فوري الحالية: <span class="num" style="font-weight:700;color:var(--rust);">${money(curFawryDebt)}</span> ج.م` : ""}</div>`;
+      html += `
+        <div class="field">
+          <div class="field-label">المبلغ المسدد (المأخوذ) من المدفوعات</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-madfoat" value="${esc(f.fawryPaidFromMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
+          <div id="fawry-debt-link-wrap">${fawryDebtLinkHtml(f)}</div>
+        </div>
+        <div class="field">
+          <div class="field-label">المبلغ المدفوع من الفيزا</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-visa" value="${esc(f.fawryPaidFromVisa ?? '')}" oninput="updateFawrySettlementPreview()">
+        </div>
+        <div class="field">
+          <div class="field-label">مبلغ إضافي يُضاف للمدفوعات (لو موجود)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-topup" value="${esc(f.fawryTopUpMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
+        </div>
+        <div id="fawry-settlement-preview" class="info-box" style="color:var(--ink-60); background:var(--paper-2);">${fawrySettlementPreviewText(f)}</div>
+      `;
+    }
+  }
+
   if (f.category === "expense") {
     html += `<div class="field"><div class="field-label">المكان / الشخص اللي خرج له المبلغ</div><input type="text" class="input" placeholder="مثال: مندوب المكن، صاحب المحل..." id="tx-destination" value="${esc(f.destination||"")}"></div>`;
   }
@@ -1986,7 +2124,9 @@ function renderTxSheetBody() {
     html += `<div class="field"><div class="field-label">اسم المودع</div><input type="text" class="input" placeholder="اسم الشخص اللي أودع المبلغ" id="tx-destination" value="${esc(f.destination||"")}"></div>`;
   }
 
-  if (f.category === "expense" || f.category === "cash") {
+  if (f.category === "fawrySettlement") {
+    /* لا حاجة لخانة مبلغ عامة — الخانات الثلاثة اتضافت فوق بالفعل */
+  } else if (f.category === "expense" || f.category === "cash") {
     html += `<div class="field"><div class="field-label">المبلغ (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
   } else if (f.category === "machineDebt") {
     html += `<div class="field"><div class="field-label">مبلغ المديونية (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
@@ -2098,7 +2238,7 @@ function submitTx() {
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
-  if (!(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
+  if (f.category !== "fawrySettlement" && !(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
   const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
   const selSubs = selMachine ? machineSubs(selMachine) : null;
@@ -2116,20 +2256,39 @@ function submitTx() {
     }
     if (num(f.amount) - curDebt > 0.005) { alert("المبلغ المدفوع أكبر من المديونية الحالية."); return; }
   }
+  let fawryDebtReduction = 0;
+  if (f.category === "fawrySettlement") {
+    if (!f.debtMachineId) { alert("اختار مكينة فوري الأول."); return; }
+    const paid = num(f.fawryPaidFromMadfoat), visa = num(f.fawryPaidFromVisa), topUp = num(f.fawryTopUpMadfoat);
+    if (paid <= 0 && visa <= 0 && topUp <= 0) { alert("اكتب على الأقل مبلغ واحد من الثلاثة."); return; }
+    if (f.fawryReduceDebt !== false && paid > 0) {
+      const live = computeLive(state.dayData);
+      let curFawryDebt = num(live.machineDebts?.[f.debtMachineId]);
+      const existing = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+      if (existing && existing.category === "fawrySettlement" && existing.machineId === f.debtMachineId) {
+        curFawryDebt += num(existing.fawryDebtReduction); // رجّع تأثير المعاملة القديمة قبل المقارنة
+      }
+      fawryDebtReduction = Math.min(paid, Math.max(curFawryDebt, 0));
+    }
+  }
 
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
   const currentUsername = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "";
 
   const tx = {
     id: f.id, time: f.time, category: f.category,
-    subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : (f.category === "machineDebt" ? "مديونية" : (f.category === "machineDebtPayment" ? "سداد" : f.subtype)))),
+    subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : (f.category === "machineDebt" ? "مديونية" : (f.category === "machineDebtPayment" ? "سداد" : (f.category === "fawrySettlement" ? "تسوية" : f.subtype))))),
     walletId: f.category === "vodafone" ? f.walletId : undefined,
-    machineId: f.category === "machine" ? f.machineId : ((f.category === "machineDebt" || f.category === "machineDebtPayment") ? f.debtMachineId : undefined),
+    machineId: f.category === "machine" ? f.machineId : ((f.category === "machineDebt" || f.category === "machineDebtPayment" || f.category === "fawrySettlement") ? f.debtMachineId : undefined),
     machineSub: (f.category === "machine" && selSubs) ? f.machineSub : undefined,
     instapayAccountId: f.category === "instapay" ? (f.instapayAccountId || (state.instapayAccounts||[])[0]?.id) : undefined, // ✦ NEW
     destination: (f.category === "expense" || f.category === "cash") ? destTrimmed : undefined,
-    amount: num(f.amount),
-    profit: (f.category === "expense" || f.category === "cash" || f.category === "machineDebt" || f.category === "machineDebtPayment") ? 0 : (num(f.profit) || 0),
+    amount: f.category === "fawrySettlement" ? (num(f.fawryPaidFromMadfoat) + num(f.fawryPaidFromVisa) + num(f.fawryTopUpMadfoat)) : num(f.amount),
+    fawryPaidFromMadfoat: f.category === "fawrySettlement" ? (num(f.fawryPaidFromMadfoat) || 0) : undefined, // ✦ NEW
+    fawryPaidFromVisa: f.category === "fawrySettlement" ? (num(f.fawryPaidFromVisa) || 0) : undefined,       // ✦ NEW
+    fawryTopUpMadfoat: f.category === "fawrySettlement" ? (num(f.fawryTopUpMadfoat) || 0) : undefined,       // ✦ NEW
+    fawryDebtReduction: f.category === "fawrySettlement" ? fawryDebtReduction : undefined,                   // ✦ NEW: قد إيه اتسدد من مديونية فوري
+    profit: (f.category === "expense" || f.category === "cash" || f.category === "machineDebt" || f.category === "machineDebtPayment" || f.category === "fawrySettlement") ? 0 : (num(f.profit) || 0),
     commission: (f.category === "vodafone" && f.subtype === "إيداع") ? (num(f.commission) || 0) : 0,  // ✦ NEW: عمولة بس في الإيداع
     note: (f.note||"").trim(),
     createdBy: oldTx?.createdBy || currentUsername,
