@@ -457,6 +457,7 @@ const emptyOpening = () => ({
   instapay: 0,           // ← للتوافق مع البيانات القديمة
   instapayAccounts: {},  // ✦ NEW: { [accountId]: balance }
   machines: {},
+  machineDebts: {},       // ✦ NEW: { [machineId]: debtAmount }
   islamBalance: 0
 });
 const emptyDay = () => ({ status: "not_started", opening: emptyOpening(), transactions: [], closing: null, closedAt: null });
@@ -476,6 +477,7 @@ function computeLive(dayData){
   let islamBalance = o.islamBalance || 0;
   const wallets = { ...o.wallets };
   const machines = { ...(o.machines || {}) };
+  const machineDebts = { ...(o.machineDebts || {}) }; // ✦ NEW: مديونية المكن
 
   (dayData.transactions || []).forEach(t => {
     const amt = num(t.amount);
@@ -532,9 +534,16 @@ function computeLive(dayData){
       drawer -= amt;
     } else if (t.category === "cash") {
       drawer += amt;
+    } else if (t.category === "machineDebt") {
+      // ✦ NEW: إضافة مديونية على مكينة
+      machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) + amt;
+    } else if (t.category === "machineDebtPayment") {
+      // ✦ NEW: سداد مديونية مكينة من الدرج (كاش)
+      drawer -= amt;
+      machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - amt;
     }
   });
-  return { drawer, machineDrawer, wallets, instapay, instapayAccounts, machines, islamBalance };
+  return { drawer, machineDrawer, wallets, instapay, instapayAccounts, machines, islamBalance, machineDebts };
 }
 
 /* ===============================================================
@@ -840,8 +849,12 @@ function loadUserProfile(user) {
         const profile = { username, role: "admin", disabled: false, createdAt: Date.now() };
         db.collection("users").doc(user.uid).set(profile).catch(err => console.error("seed admin profile failed", err));
         state.userProfile = { username, role: "admin" };
-      } else { state.userProfile = { username, role: "viewer" }; }
-      state.userProfileReady = true; render();
+        state.userProfileReady = true; render(); return;
+      }
+      /* ✦ الحساب ده كان موجود وانحذف بمعرفة الأدمن — امنع الدخول */
+      state.userProfile = null; state.userProfileReady = true; render();
+      alert("الحساب ده اتحذف من الأدمن.");
+      firebase.auth().signOut().then(() => db ? db.terminate() : null).then(() => firebase.firestore().clearPersistence()).catch(err => console.warn("cleanup failed", err)).finally(() => location.reload());
     }).catch(err => { console.error("loadUserProfile bootstrap check failed", err); state.userProfileReady = true; render(); });
   }).catch(err => { console.error("loadUserProfile failed", err); state.userProfileReady = true; render(); });
 }
@@ -951,13 +964,12 @@ function toggleUserRole(id) {
   const next = u.role === "editor" ? "viewer" : "editor";
   db.collection("users").doc(u.id).update({ role: next }).then(() => loadUsersList()).catch(err => alert("فشل: " + (err.message||err)));
 }
-function toggleUserDisabled(id) {
+function deleteUser(id) {
   if (!isAdmin()) return;
   const u = state.usersList.find(x => x.id === id);
-  if (!u || u.role === "admin") { if(u && u.role==="admin") alert("مينفعش تعطّل حساب الأدمن."); return; }
-  const next = !u.disabled;
-  if (!confirm(next ? `تعطيل حساب "${u.username}"؟` : `تفعيل حساب "${u.username}"؟`)) return;
-  db.collection("users").doc(u.id).update({ disabled: next }).then(() => loadUsersList()).catch(err => alert("فشل: " + (err.message||err)));
+  if (!u || u.role === "admin") { if(u && u.role==="admin") alert("مينفعش تحذف حساب الأدمن."); return; }
+  if (!confirm(`حذف حساب "${u.username}" نهائيًا؟ مينفعش ترجّعه بعد كده.`)) return;
+  db.collection("users").doc(u.id).delete().then(() => loadUsersList()).catch(err => alert("فشل: " + (err.message||err)));
 }
 function logout() {
   if (!confirm("تسجيل الخروج؟")) return;
@@ -1203,6 +1215,8 @@ function renderBalancesGrid(live) {
           ${instapayHtml}
         </div>
         ${islamCard(live.islamBalance)}
+        <div style="height:8px;"></div>
+        ${machineDebtsCard(live)}
       `}
 
       ${sectionHeader("wallets", "المحافظ الإلكترونية")}
@@ -1316,6 +1330,27 @@ function islamCard(value) {
   `;
 }
 
+/* ✦ NEW: كارت مديونية المكن */
+function machineDebtsCard(live) {
+  const debts = state.machines
+    .map(m => ({ name: m.name, val: num(live.machineDebts?.[m.id]) }))
+    .filter(x => Math.abs(x.val) >= 0.01);
+  return `
+    <div class="balance-card" style="width:100%;">
+      <div class="balance-card-top">${icon("alert-triangle", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">مديونية المكن</div></div>
+      ${debts.length === 0
+        ? `<div style="font-size:13px; color:var(--ink-60); font-weight:600;">لا يوجد مديونيات للمكن</div>`
+        : debts.map(x => `
+            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:3px 0;">
+              <div style="font-size:13px; font-weight:700; color:var(--ink);">${esc(x.name)}</div>
+              <div class="num" style="font-size:14px; font-weight:700; color:var(--rust);">${state.balancesHidden ? "••••" : money(x.val)} مديونية</div>
+            </div>
+          `).join("")
+      }
+    </div>
+  `;
+}
+
 function renderTodayView(live) {
   const d = state.dayData;
   if (d.status === "not_started") {
@@ -1382,6 +1417,14 @@ function renderTxRow(tx, editable) {
   } else if (tx.category === "cash") {
     iconName = "banknote"; color = "var(--emerald)";
     title = `نقدية · ${esc(tx.destination || "—")}`;
+  } else if (tx.category === "machineDebt") {
+    const m = state.machines.find(mm => mm.id === tx.machineId);
+    iconName = "alert-triangle"; color = "var(--rust)";
+    title = `مديونية (المكن) · ${esc(m ? m.name : "—")}`;
+  } else if (tx.category === "machineDebtPayment") {
+    const m = state.machines.find(mm => mm.id === tx.machineId);
+    iconName = "check-circle-2"; color = "var(--emerald)";
+    title = `سداد مديونية (المكن) · ${esc(m ? m.name : "—")}`;
   } else {
     const m = state.machines.find(m=>m.id===tx.machineId);
     if (tx.machineSub === "فيزا") { iconName = "arrow-up-circle"; color = "var(--steel)"; }
@@ -1428,12 +1471,14 @@ function renderClosedStamp(closing, live, closedBy) {
     if (subs) return subs.map(s => machineBalValue(closing.machines?.[m.id], s) - machineBalValue(live.machines?.[m.id], s));
     return [machineBalValue(closing.machines?.[m.id]) - machineBalValue(live.machines?.[m.id])];
   }).flat();
+  const machineDebtDiffs = state.machines.map(m => num(closing.machineDebts?.[m.id] ?? 0) - num(live.machineDebts?.[m.id]));
   const diffs = [
     num(closing.drawer) - live.drawer,
     num(closing.machineDrawer) - live.machineDrawer,
     ...WALLET_IDS.map(id => num(closing.wallets?.[id]) - live.wallets[id]),
     ...ipDiffs,
     ...machineDiffs,
+    ...machineDebtDiffs,
     num(closing.islamBalance) - live.islamBalance,
   ];
   const matched = diffs.every(d => Math.abs(d) < 0.01);
@@ -1583,6 +1628,17 @@ function renderStartSheet() {
         }).join("")}
       </div>
     `}
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">مديونية المكن (لو فيه)</div>
+    ${state.machines.length === 0 ? `<div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>` : `
+      <div class="field-2col">
+        ${state.machines.map(m => `
+          <div class="field">
+            <div class="field-label">${esc(m.name)}</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}">
+          </div>
+        `).join("")}
+      </div>
+    `}
     <div class="field">
       <div class="field-label">رصيد حساب إسلام (لو فيه رصيد سابق)</div>
       <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-islam">
@@ -1615,6 +1671,10 @@ function submitStartDay() {
         return [m.id, obj];
       }
       const el = document.getElementById(`sd-machine-${m.id}`);
+      return [m.id, el ? num(el.value) : 0];
+    })),
+    machineDebts: Object.fromEntries(state.machines.map(m => {
+      const el = document.getElementById(`sd-debt-${m.id}`);
       return [m.id, el ? num(el.value) : 0];
     })),
     islamBalance: num(document.getElementById("sd-islam").value),
@@ -1669,6 +1729,12 @@ function renderEditOpeningSheet() {
         }).join("")}
       </div>
     `}
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">مديونية المكن</div>
+    ${state.machines.length === 0 ? `<div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>` : `
+      <div class="field-2col">
+        ${state.machines.map(m => `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" value="${num(o.machineDebts?.[m.id]) || ''}" id="eo-debt-${m.id}"></div>`).join("")}
+      </div>
+    `}
     <div class="field"><div class="field-label">رصيد حساب إسلام</div><input type="number" inputmode="decimal" class="input" value="${o.islamBalance || ''}" id="eo-islam"></div>
   `;
 }
@@ -1697,6 +1763,10 @@ function submitEditOpening() {
       const el = document.getElementById(`eo-machine-${m.id}`);
       return [m.id, el ? num(el.value) : num(state.dayData.opening?.machines?.[m.id])];
     })),
+    machineDebts: Object.fromEntries(state.machines.map(m => {
+      const el = document.getElementById(`eo-debt-${m.id}`);
+      return [m.id, el ? num(el.value) : num(state.dayData.opening?.machineDebts?.[m.id])];
+    })),
     islamBalance: num(document.getElementById("eo-islam").value),
   };
   state.dayData = { ...state.dayData, opening };
@@ -1720,6 +1790,7 @@ function openTxSheet(txId) {
     walletId: initial?.walletId || "w1",
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
     machineSub: initial?.machineSub || null,
+    debtMachineId: initial?.machineId || (state.machines[0]?.id || ""), // ✦ NEW: للمديونية وسدادها
     instapayAccountId: initial?.instapayAccountId || firstIpId, // ✦ NEW
     destination: initial?.destination ?? "",
     amount: initial?.amount ?? "",
@@ -1743,6 +1814,18 @@ function txSelectMachine(id) {
   refreshSheetOnly();
 }
 function txSelectMachineSub(sub) { syncTxFormFromInputs(); state.txForm.machineSub = sub; refreshSheetOnly(); }
+function txSelectDebtMachine(id) { syncTxFormFromInputs(); state.txForm.debtMachineId = id; refreshSheetOnly(); }
+
+/* ✦ NEW: تحديث لحظي للمتبقي من مديونية المكينة عند سداد المديونية */
+function updateDebtPaymentRemaining(curDebt) {
+  const el = document.getElementById("tx-amount");
+  const out = document.getElementById("debt-payment-remaining");
+  if (!el || !out) return;
+  const val = el.value;
+  if (val === "") { out.innerHTML = ""; return; }
+  const remaining = curDebt - num(val);
+  out.innerHTML = `متبقي: <span class="num" style="font-weight:700;">${money(remaining)}</span> ج.م`;
+}
 
 function syncTxFormFromInputs() {
   const get = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
@@ -1761,7 +1844,7 @@ function renderTxSheetBody() {
     <div class="field">
       <div class="field-label">الخدمة</div>
       <div class="chip-row wrap">
-        ${[["vodafone","فودافون كاش"],["instapay","انستاباي"],["machine","شحن مكن"],["islam","حساب إسلام"],["cash","نقدية"],["expense","خوارج"]].map(([k,l]) => `
+        ${[["vodafone","فودافون كاش"],["instapay","انستاباي"],["machine","شحن مكن"],["islam","حساب إسلام"],["cash","نقدية"],["expense","خوارج"],["machineDebt","مديونية (المكن)"],["machineDebtPayment","سداد مديونية (المكن)"]].map(([k,l]) => `
           <button class="chip-btn small ${f.category===k?'active':''}" onclick="txSelectCategory('${k}')">${l}</button>
         `).join("")}
       </div>
@@ -1849,6 +1932,53 @@ function renderTxSheetBody() {
     }
   }
 
+  /* ✦ NEW: إضافة مديونية مكينة */
+  if (f.category === "machineDebt") {
+    if (state.machines.length === 0) {
+      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الخدمات" وضيف المكينة الأول.</div>`;
+    } else {
+      html += `
+        <div class="field">
+          <div class="field-label">المكينة</div>
+          <div class="chip-row wrap">
+            ${state.machines.map(m => `
+              <button class="chip-btn small ${f.debtMachineId===m.id?'active':''}" onclick="txSelectDebtMachine('${m.id}')">${esc(m.name)}</button>
+            `).join("")}
+          </div>
+        </div>
+        <div class="info-box">هيتضاف المبلغ كمديونية على المكينة دي، من غير أي تأثير على الدرج.</div>
+      `;
+    }
+  }
+
+  /* ✦ NEW: سداد مديونية مكينة */
+  if (f.category === "machineDebtPayment") {
+    const live = computeLive(state.dayData);
+    const existingPayment = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    const debtFor = (mid) => {
+      let d = num(live.machineDebts?.[mid]);
+      if (existingPayment && existingPayment.category === "machineDebtPayment" && existingPayment.machineId === mid) d += num(existingPayment.amount);
+      return d;
+    };
+    const debtMachines = state.machines.filter(m => Math.abs(debtFor(m.id)) >= 0.01);
+    if (debtMachines.length === 0) {
+      html += `<div class="warn-box">مفيش مديونيات متسجلة حاليًا على أي مكينة.</div>`;
+    } else {
+      html += `
+        <div class="field">
+          <div class="field-label">المكينة</div>
+          <div class="chip-row wrap">
+            ${debtMachines.map(m => `
+              <button class="chip-btn small ${f.debtMachineId===m.id?'active':''}" onclick="txSelectDebtMachine('${m.id}')">${esc(m.name)}</button>
+            `).join("")}
+          </div>
+        </div>
+      `;
+      const curDebt = debtFor(f.debtMachineId);
+      html += `<div class="info-box">المديونية الحالية: <span class="num" style="font-weight:700;">${money(curDebt)}</span> ج.م. هيتخصم المبلغ من الدرج (كاش).</div>`;
+    }
+  }
+
   if (f.category === "expense") {
     html += `<div class="field"><div class="field-label">المكان / الشخص اللي خرج له المبلغ</div><input type="text" class="input" placeholder="مثال: مندوب المكن، صاحب المحل..." id="tx-destination" value="${esc(f.destination||"")}"></div>`;
   }
@@ -1858,27 +1988,57 @@ function renderTxSheetBody() {
 
   if (f.category === "expense" || f.category === "cash") {
     html += `<div class="field"><div class="field-label">المبلغ (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
+  } else if (f.category === "machineDebt") {
+    html += `<div class="field"><div class="field-label">مبلغ المديونية (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
+  } else if (f.category === "machineDebtPayment") {
+    const live = computeLive(state.dayData);
+    const existingPayment = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    let curDebt = num(live.machineDebts?.[f.debtMachineId]);
+    if (existingPayment && existingPayment.category === "machineDebtPayment" && existingPayment.machineId === f.debtMachineId) curDebt += num(existingPayment.amount);
+    html += `
+      <div class="field">
+        <div class="field-label">مبلغ السداد (ج.م)</div>
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateDebtPaymentRemaining(${curDebt})">
+        <div id="debt-payment-remaining" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `متبقي: <span class="num" style="font-weight:700;">${money(curDebt - num(f.amount))}</span> ج.م` : ""}</div>
+      </div>
+    `;
   } else if (f.category === "vodafone") {
-    /* ✦ فودافون: المبلغ + المكسب + عمولة المحفظة (3 خانات) */
+    /* ✦ فودافون: المبلغ + المكسب + عمولة المحفظة (عمولة تظهر بس في الإيداع) */
+    const isDeposit = f.subtype === "إيداع";
     const defaultComm = num(state.walletCommissions?.[f.walletId] || 0);
     const commVal = f.commission !== "" ? f.commission : (defaultComm > 0 ? defaultComm : "");
-    html += `
-      <div class="field-3col" style="margin-bottom:14px;">
-        <div class="field" style="margin-bottom:0;">
-          <div class="field-label">المبلغ (ج.م)</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+    if (isDeposit) {
+      html += `
+        <div class="field-3col" style="margin-bottom:14px;">
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label">المبلغ (ج.م)</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label">المكسب</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label">عمولة المحفظة</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(commVal)}">
+          </div>
         </div>
-        <div class="field" style="margin-bottom:0;">
-          <div class="field-label">المكسب</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+        ${defaultComm > 0 ? `<div class="info-box" style="margin-top:-8px;">العمولة الافتراضية لهذه المحفظة: <span class="num" style="font-weight:700;">${money(defaultComm)}</span> ج.م</div>` : ""}
+      `;
+    } else {
+      html += `
+        <div class="field-row">
+          <div class="field">
+            <div class="field-label">المبلغ (ج.م)</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+          </div>
+          <div class="field">
+            <div class="field-label">المكسب</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+          </div>
         </div>
-        <div class="field" style="margin-bottom:0;">
-          <div class="field-label">عمولة المحفظة</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(commVal)}">
-        </div>
-      </div>
-      ${defaultComm > 0 ? `<div class="info-box" style="margin-top:-8px;">العمولة الافتراضية لهذه المحفظة: <span class="num" style="font-weight:700;">${money(defaultComm)}</span> ج.م</div>` : ""}
-    `;
+      `;
+    }
   } else {
     html += `
       <div class="field-row">
@@ -1945,21 +2105,32 @@ function submitTx() {
   if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
   if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص."); return; }
   if (f.category === "cash" && !destTrimmed) { alert("اكتب اسم المودع."); return; }
+  if (f.category === "machineDebt" && !f.debtMachineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
+  if (f.category === "machineDebtPayment") {
+    if (!f.debtMachineId) { alert("اختار المكينة الأول."); return; }
+    const live = computeLive(state.dayData);
+    let curDebt = num(live.machineDebts?.[f.debtMachineId]);
+    const existing = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    if (existing && existing.category === "machineDebtPayment" && existing.machineId === f.debtMachineId) {
+      curDebt += num(existing.amount); // رجّع تأثير المعاملة القديمة قبل المقارنة
+    }
+    if (num(f.amount) - curDebt > 0.005) { alert("المبلغ المدفوع أكبر من المديونية الحالية."); return; }
+  }
 
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
   const currentUsername = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "";
 
   const tx = {
     id: f.id, time: f.time, category: f.category,
-    subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : f.subtype)),
+    subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : (f.category === "machineDebt" ? "مديونية" : (f.category === "machineDebtPayment" ? "سداد" : f.subtype)))),
     walletId: f.category === "vodafone" ? f.walletId : undefined,
-    machineId: f.category === "machine" ? f.machineId : undefined,
+    machineId: f.category === "machine" ? f.machineId : ((f.category === "machineDebt" || f.category === "machineDebtPayment") ? f.debtMachineId : undefined),
     machineSub: (f.category === "machine" && selSubs) ? f.machineSub : undefined,
     instapayAccountId: f.category === "instapay" ? (f.instapayAccountId || (state.instapayAccounts||[])[0]?.id) : undefined, // ✦ NEW
     destination: (f.category === "expense" || f.category === "cash") ? destTrimmed : undefined,
     amount: num(f.amount),
-    profit: (f.category === "expense" || f.category === "cash") ? 0 : (num(f.profit) || 0),
-    commission: f.category === "vodafone" ? (num(f.commission) || 0) : 0,  // ✦ NEW
+    profit: (f.category === "expense" || f.category === "cash" || f.category === "machineDebt" || f.category === "machineDebtPayment") ? 0 : (num(f.profit) || 0),
+    commission: (f.category === "vodafone" && f.subtype === "إيداع") ? (num(f.commission) || 0) : 0,  // ✦ NEW: عمولة بس في الإيداع
     note: (f.note||"").trim(),
     createdBy: oldTx?.createdBy || currentUsername,
     editedBy: oldTx ? currentUsername : undefined,
@@ -1997,6 +2168,7 @@ function closeRowInputChanged(kind, id, sub) {
   else if (kind === "machine") { expected = num(live.machines?.[id]); inputId = `cd-machine-${id}`; diffId = `cd-diff-machine-${id}`; }
   else if (kind === "machineSub") { expected = machineBalValue(live.machines?.[id], sub); inputId = `cd-machine-${id}-${sub}`; diffId = `cd-diff-machine-${id}-${sub}`; }
   else if (kind === "islam") { expected = live.islamBalance; inputId = "cd-islam"; diffId = "cd-diff-islam"; }
+  else if (kind === "machineDebt") { expected = num(live.machineDebts?.[id]); inputId = `cd-debt-${id}`; diffId = `cd-diff-debt-${id}`; }
   const el = document.getElementById(inputId);
   const diffEl = document.getElementById(diffId);
   if (!el || !diffEl) return;
@@ -2055,6 +2227,12 @@ function renderCloseSheetBody() {
     }
   });
   html += row("حساب إسلام", live.islamBalance, "cd-islam", "cd-diff-islam", "closeRowInputChanged('islam')");
+  if (state.machines.length) {
+    html += `<div style="font-size:13px;font-weight:700;color:var(--ink);margin:14px 2px 8px;">مديونية المكن</div>`;
+    state.machines.forEach(m => {
+      html += row(`مديونية ${m.name}`, num(live.machineDebts?.[m.id]), `cd-debt-${m.id}`, `cd-diff-debt-${m.id}`, `closeRowInputChanged('machineDebt','${m.id}')`);
+    });
+  }
   return html;
 }
 
@@ -2083,6 +2261,10 @@ function submitCloseDay() {
       return [m.id, el ? num(el.value) : 0];
     })),
     islamBalance: num(document.getElementById("cd-islam").value),
+    machineDebts: Object.fromEntries(state.machines.map(m => {
+      const el = document.getElementById(`cd-debt-${m.id}`);
+      return [m.id, el ? num(el.value) : 0];
+    })),
   };
   state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow(), closedBy: state.userProfile?.username || "" };
   persistDay(state.today, state.dayData);
@@ -2454,7 +2636,7 @@ function renderUsersSection() {
               ${u.role !== "admin" ? `
                 <div style="display:flex; align-items:center; gap:6px;">
                   <button class="chip-btn small" onclick="toggleUserRole('${u.id}')">${u.role === "editor" ? "رؤية فقط" : "رؤية وتعديل"}</button>
-                  <button class="icon-btn" title="${u.disabled?'تفعيل':'تعطيل'}" onclick="toggleUserDisabled('${u.id}')">${icon(u.disabled?"check-circle-2":"trash-2",{size:15,color: u.disabled ? "var(--emerald)" : "var(--rust)"})}</button>
+                  <button class="icon-btn" title="حذف" onclick="deleteUser('${u.id}')">${icon("trash-2",{size:15,color:"var(--rust)"})}</button>
                 </div>
               ` : `<div style="font-size:11px;color:var(--ink-40);">حساب أساسي</div>`}
             </div>
