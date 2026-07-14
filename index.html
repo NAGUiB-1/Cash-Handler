@@ -100,7 +100,7 @@
   .balance-card-value { font-size: 17px; font-weight: 700; color: var(--ink); }
   .balance-card-value.negative { color: var(--rust); }
 
-  /* Fawry wide card: spans both grid columns, title on top, 3 subs side by side */
+  /* Fawry wide card */
   .fawry-card {
     background: #fff; border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
     grid-column: 1 / -1;
@@ -119,6 +119,25 @@
   }
   .fawry-sub-value { font-size: 14.5px; font-weight: 700; color: var(--ink); }
   .fawry-sub-value.negative { color: var(--rust); }
+
+  /* Instapay wide card */
+  .instapay-wide-card {
+    background: #fff; border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
+    margin-bottom: 8px;
+  }
+  .instapay-wide-title {
+    display: flex; align-items: center; gap: 6px;
+    font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 13px; color: var(--ink);
+    margin-bottom: 8px;
+  }
+  .instapay-subs { display: flex; gap: 8px; flex-wrap: wrap; }
+  .instapay-sub-card {
+    flex: 1; min-width: 100px; background: var(--paper); border-radius: 10px; padding: 8px 10px;
+    border: 1px solid var(--ink-08);
+  }
+  .instapay-sub-label { font-size: 11px; color: var(--ink-60); font-weight: 600; margin-bottom: 3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .instapay-sub-value { font-size: 14px; font-weight: 700; }
+  .instapay-sub-value.negative { color: var(--rust); }
 
   /* Empty / start state */
   .empty-state { text-align: center; padding: 40px 10px; }
@@ -154,6 +173,7 @@
   .tx-row-amt { text-align: left; }
   .tx-row-amt-val { font-size: 14.5px; font-weight: 700; }
   .tx-row-profit { font-size: 11px; color: var(--emerald); }
+  .tx-row-commission { font-size: 11px; color: var(--rust); }
   .tx-row-actions { display: flex; gap: 4px; }
   .icon-btn { background: none; border: none; padding: 5px; display: flex; align-items: center; justify-content: center; }
 
@@ -214,6 +234,7 @@
     touch-action: manipulation;
   }
   .field-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px; }
+  .field-3col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 6px; }
   .field-row { display: flex; gap: 10px; }
   .field-row > .field { flex: 1; }
 
@@ -235,6 +256,7 @@
   .subtype-btn.deposit.active { border-color: var(--emerald); background: #e4eeea; color: var(--emerald); }
 
   .warn-box { font-size: 13px; color: var(--rust); background: #f3e0da; padding: 12px; border-radius: 10px; margin-bottom: 14px; }
+  .info-box { font-size: 13px; color: var(--steel); background: #e7ecef; padding: 12px; border-radius: 10px; margin-bottom: 14px; }
 
   .close-row { margin-bottom: 14px; background: #fff; border-radius: 14px; padding: 13px; border: 1px solid var(--ink-10); }
   .close-row-top { display: flex; justify-content: space-between; margin-bottom: 8px; }
@@ -288,12 +310,10 @@
   .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; gap: 12px; }
   .loading-text { font-family: 'Tajawal', sans-serif; color: var(--ink-40); font-size: 14px; }
 
-  /* Overflow safety for user-edited / dynamic text so nothing overlaps neighboring elements */
   .tx-row-title, .services-row-name, .close-row-label, .archive-list-item-date,
   .balance-card-label, .empty-state-desc { overflow-wrap: anywhere; word-break: break-word; }
   .close-row-top { flex-wrap: wrap; row-gap: 4px; }
 
-  /* Small-screen tightening */
   @media (max-width: 360px) {
     .app-header { padding: 18px 14px 16px; }
     .app-header-title { font-size: 16.5px; }
@@ -309,7 +329,9 @@
 <div id="shell"></div>
 
 <script>
-/* ---------------- Firebase (Firestore) ---------------- */
+/* ===============================================================
+   Firebase Config
+   =============================================================== */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyC6X9s2vAb4XIFUKEuTxPCjyo6iXuOnkTg",
   authDomain: "cash-app-9745c.firebaseapp.com",
@@ -337,6 +359,8 @@ function reportSaveError(msg) {
   state.saveError = msg;
   render();
 }
+
+/* ---- Firestore helpers ---- */
 function saveMachines(machines) {
   if (!db) return;
   db.collection("meta").doc("machines").set({ list: machines })
@@ -352,6 +376,18 @@ function saveWalletLimits(limits) {
   db.collection("meta").doc("walletLimits").set(limits)
     .catch(err => reportSaveError("فشل حفظ حدود المحافظ (الليميت): " + (err.message || err.code)));
 }
+/* ✦ NEW: حفظ حسابات انستاباي */
+function saveInstapayAccounts(accounts) {
+  if (!db) return;
+  db.collection("meta").doc("instapayAccounts").set({ list: accounts })
+    .catch(err => reportSaveError("فشل حفظ حسابات انستاباي: " + (err.message || err.code)));
+}
+/* ✦ NEW: حفظ عمولات المحافظ */
+function saveWalletCommissions(commissions) {
+  if (!db) return;
+  db.collection("meta").doc("walletCommissions").set(commissions)
+    .catch(err => reportSaveError("فشل حفظ عمولات المحافظ: " + (err.message || err.code)));
+}
 function persistDay(key, data) {
   if (!db) return;
   db.collection("days").doc(key).set(data)
@@ -359,21 +395,19 @@ function persistDay(key, data) {
 }
 function fetchArchiveList() {
   if (!db) return Promise.resolve([]);
-  // بنجيب كل مستندات الأيام من غير orderBy على اسم المستند، عشان كده مش محتاجين نعمل composite index
-  // في Firestore (كان محتاج فهرس زيادة عشان الترتيب التنازلي على __name__). الترتيب بيتم محليًا بدل السيرفر.
   return db.collection("days")
     .get()
     .then(snap => snap.docs.map(d => d.id).sort((a, b) => b.localeCompare(a)).slice(0, 90));
-    // (no .catch here on purpose — let the caller see and display the real error instead of a silent empty list)
 }
 function fetchArchiveDay(key) {
   if (!db) return Promise.resolve(null);
   return db.collection("days").doc(key).get()
     .then(snap => snap.exists ? snap.data() : null);
-    // (no .catch here on purpose — let the caller see and display the real error)
 }
 
-/* ---------------- date/format helpers ---------------- */
+/* ===============================================================
+   Date / Format helpers
+   =============================================================== */
 const AR_MONTHS = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const AR_DAYS = ["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
 function pad(n){ return String(n).padStart(2,"0"); }
@@ -398,74 +432,124 @@ function money(n){
 }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-/* ---------------- domain model ---------------- */
+/* ===============================================================
+   Domain model
+   =============================================================== */
 const WALLET_IDS = ["w1","w2","w3","w4"];
 const WALLET_LIMIT_TOTAL = 200000;
 const FAWRY_SUBS = ["مدفوعات", "خدمات موبايل", "فيزا"];
-const FAWRY_NO_NEGATIVE_EXEMPT = "مدفوعات"; // the only item allowed to go negative
+const FAWRY_NO_NEGATIVE_EXEMPT = "مدفوعات";
 function machineSubs(m) { return (m && m.name === "فوري") ? FAWRY_SUBS : null; }
 function emptyFawryBalance() { return { "مدفوعات": 0, "خدمات موبايل": 0, "فيزا": 0 }; }
 function machineBalValue(bal, sub) {
   if (sub) return num(bal && typeof bal === "object" ? bal[sub] : 0);
   return num(bal);
 }
-const emptyOpening = () => ({ drawer: 0, machineDrawer: 0, wallets: { w1:0,w2:0,w3:0,w4:0 }, instapay: 0, machines: {}, islamBalance: 0 });
+
+/* ✦ NEW: حسابات انستاباي الافتراضية */
+const DEFAULT_INSTAPAY_ACCOUNTS = [
+  { id: "ip1", name: "انستاباي 1" }
+];
+
+const emptyOpening = () => ({
+  drawer: 0, machineDrawer: 0,
+  wallets: { w1:0,w2:0,w3:0,w4:0 },
+  instapay: 0,           // ← للتوافق مع البيانات القديمة
+  instapayAccounts: {},  // ✦ NEW: { [accountId]: balance }
+  machines: {},
+  islamBalance: 0
+});
 const emptyDay = () => ({ status: "not_started", opening: emptyOpening(), transactions: [], closing: null, closedAt: null });
 
+/* ✦ UPDATED: computeLive يدعم حسابات انستاباي المتعددة + عمولة المحفظة */
 function computeLive(dayData){
   const o = dayData.opening || emptyOpening();
-  let drawer = o.drawer, machineDrawer = o.machineDrawer || 0, instapay = o.instapay, islamBalance = o.islamBalance || 0;
+  let drawer = o.drawer;
+  let machineDrawer = o.machineDrawer || 0;
+  // دعم الحساب القديم (instapay رقم) والجديد (instapayAccounts كائن)
+  let instapay = o.instapay || 0; // legacy single
+  const instapayAccounts = {};
+  // ابدأ من الأرصدة الافتتاحية
+  (state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS).forEach(acc => {
+    instapayAccounts[acc.id] = num(o.instapayAccounts?.[acc.id] ?? 0);
+  });
+  let islamBalance = o.islamBalance || 0;
   const wallets = { ...o.wallets };
   const machines = { ...(o.machines || {}) };
+
   (dayData.transactions || []).forEach(t => {
     const amt = num(t.amount);
     const p = num(t.profit);
+    const comm = num(t.commission); // ✦ NEW: عمولة المحفظة
+
     if (t.category === "vodafone") {
-      if (t.subtype === "سحب") { drawer += (-amt + p); wallets[t.walletId] = (wallets[t.walletId]||0) + amt; }
-      if (t.subtype === "إيداع") { drawer += (amt + p); wallets[t.walletId] = (wallets[t.walletId]||0) - amt; }
+      if (t.subtype === "سحب") {
+        drawer += (-amt + p);
+        wallets[t.walletId] = (wallets[t.walletId]||0) + amt;
+        // ✦ عمولة المحفظة: تتخصم من المحفظة
+        if (comm > 0) wallets[t.walletId] = (wallets[t.walletId]||0) - comm;
+      }
+      if (t.subtype === "إيداع") {
+        drawer += (amt + p);
+        wallets[t.walletId] = (wallets[t.walletId]||0) - amt;
+        // ✦ عمولة المحفظة: تتخصم من المحفظة
+        if (comm > 0) wallets[t.walletId] = (wallets[t.walletId]||0) - comm;
+      }
     } else if (t.category === "instapay") {
-      if (t.subtype === "سحب") { drawer += (-amt + p); instapay += amt; }
-      if (t.subtype === "إيداع") { drawer += (amt + p); instapay -= amt; }
+      const accId = t.instapayAccountId || "ip1";
+      if (t.subtype === "سحب") {
+        drawer += (-amt + p);
+        instapayAccounts[accId] = (instapayAccounts[accId] || 0) + amt;
+        instapay += amt; // legacy compat
+      }
+      if (t.subtype === "إيداع") {
+        drawer += (amt + p);
+        instapayAccounts[accId] = (instapayAccounts[accId] || 0) - amt;
+        instapay -= amt; // legacy compat
+      }
     } else if (t.category === "islam") {
-      // مرآة لمنطق فودافون/انستاباي لكن بدل محفظة الشحن بنتابع "رصيد إسلام"
       if (t.subtype === "سحب") { drawer += (-amt + p); islamBalance += amt; }
       if (t.subtype === "إيداع") { drawer += (amt + p); islamBalance -= amt; }
     } else if (t.category === "machine") {
       const sub = t.machineSub;
       if (sub === "فيزا") {
-        // فيزا: بتتخصم من درج الكاش، وبيتضاف رصيدها، والنسبة بتضاف لدرج الكاش (زي سحب فودافون)
         drawer += (-amt + p);
         const cur = machines[t.machineId];
         const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
         obj["فيزا"] = (obj["فيزا"] || 0) + amt;
         machines[t.machineId] = obj;
       } else if (sub) {
-        // مدفوعات / خدمات موبايل: بتدخل درج المكن زي أي شحن عادي
         machineDrawer += (amt + p);
         const cur = machines[t.machineId];
         const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
         obj[sub] = (obj[sub] || 0) - amt;
         machines[t.machineId] = obj;
       } else {
-        // فلوس شحن المكن بتدخل في درج المكن المنفصل، مش درج الكاش
         machineDrawer += (amt + p);
         machines[t.machineId] = (machines[t.machineId] || 0) - amt;
       }
     } else if (t.category === "expense") {
-      // خوارج: مبلغ خرج من الدرج لجهة تانية (مندوب، صاحب المكان، إلخ)
       drawer -= amt;
     } else if (t.category === "cash") {
-      // نقدية: مبلغ كاش اتوّدع في الدرج
       drawer += amt;
     }
   });
-  return { drawer, machineDrawer, wallets, instapay, machines, islamBalance };
+  return { drawer, machineDrawer, wallets, instapay, instapayAccounts, machines, islamBalance };
 }
 
-/* ---------------- global state ---------------- */
+/* ===============================================================
+   Global state
+   =============================================================== */
 const state = {
   machines: [],
   walletNames: { w1:"محفظة 1", w2:"محفظة 2", w3:"محفظة 3", w4:"محفظة 4" },
+  /* ✦ NEW */
+  instapayAccounts: DEFAULT_INSTAPAY_ACCOUNTS,
+  instapayAccountsReady: false,
+  /* ✦ NEW: عمولات المحافظ { w1: 0, w2: 0, ... } */
+  walletCommissions: { w1:0, w2:0, w3:0, w4:0 },
+  walletCommissionsReady: false,
+
   archiveIndex: [],
   archiveLoading: false,
   archiveError: null,
@@ -475,10 +559,12 @@ const state = {
   viewDate: null,
   archiveDayData: null,
   archiveDetailError: null,
-  sheet: null,        // 'start' | 'tx' | 'close' | 'addMachine' | null
+  sheet: null,
   txForm: null,
   editingWalletId: null,
   editingWalletLimitId: null,
+  editingWalletCommissionId: null,
+  editingInstapayId: null,
   busy: false,
   ready: false,
   connectionError: null,
@@ -497,7 +583,7 @@ const state = {
   balancesHidden: false,
   collapsedSections: { main: false, wallets: false, machines: false },
   walletLimits: { w1: 0, w2: 0, w3: 0, w4: 0 },
-  userProfile: null,        // { username, role: 'admin'|'editor'|'viewer' }
+  userProfile: null,
   userProfileReady: false,
   usersList: [],
   usersListLoading: false,
@@ -510,7 +596,7 @@ try {
   state.balancesHidden = localStorage.getItem("cashapp_balancesHidden") === "1";
   const savedSections = JSON.parse(localStorage.getItem("cashapp_collapsedSections") || "null");
   if (savedSections) state.collapsedSections = { ...state.collapsedSections, ...savedSections };
-} catch (e) { /* localStorage unavailable, just use defaults */ }
+} catch (e) {}
 
 function toggleBalancesHidden() {
   state.balancesHidden = !state.balancesHidden;
@@ -523,6 +609,9 @@ function toggleSection(key) {
   render();
 }
 
+/* ===============================================================
+   Realtime listeners
+   =============================================================== */
 const LISTENER_RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000];
 
 function attachRealtimeListeners() {
@@ -532,11 +621,13 @@ function attachRealtimeListeners() {
   attachMachinesListener(0);
   attachWalletNamesListener(0);
   attachWalletLimitsListener(0);
+  attachInstapayAccountsListener(0);   // ✦ NEW
+  attachWalletCommissionsListener(0);  // ✦ NEW
   attachDayListener(0);
 }
 
 function scheduleRetry(retryCount, fn) {
-  if (!state.authUser) return; // logged out meanwhile, don't retry
+  if (!state.authUser) return;
   const delay = LISTENER_RETRY_DELAYS[Math.min(retryCount, LISTENER_RETRY_DELAYS.length - 1)];
   setTimeout(() => { if (state.authUser) fn(); }, delay);
 }
@@ -547,7 +638,6 @@ function attachMachinesListener(retryCount) {
     if (data && Array.isArray(data.list) && data.list.length > 0) {
       state.machines = data.list;
     } else if (!state.machinesReady) {
-      // seed defaults once, only the first time this doc is empty
       const DEFAULT_MACHINES = ["فوري", "اوبي", "أمان", "ممكن", "سوبر باي", "باب رزق"];
       const seeded = DEFAULT_MACHINES.map(name => ({ id: genId(), name }));
       state.machines = seeded;
@@ -557,8 +647,6 @@ function attachMachinesListener(retryCount) {
     checkReady();
     render();
   }, err => {
-    // machines have safe defaults, so a transient error here shouldn't block the whole app —
-    // just retry quietly in the background instead of showing a fatal screen.
     console.error("machines listener error (retry " + retryCount + ")", err);
     scheduleRetry(retryCount, () => attachMachinesListener(retryCount + 1));
   });
@@ -602,11 +690,48 @@ function attachWalletLimitsListener(retryCount) {
   state.unsubscribers.push(unsub);
 }
 
+/* ✦ NEW: listener لحسابات انستاباي */
+function attachInstapayAccountsListener(retryCount) {
+  const unsub = db.collection("meta").doc("instapayAccounts").onSnapshot(snap => {
+    if (snap.exists && snap.data().list && snap.data().list.length > 0) {
+      state.instapayAccounts = snap.data().list;
+    } else if (!state.instapayAccountsReady) {
+      state.instapayAccounts = DEFAULT_INSTAPAY_ACCOUNTS.map(a => ({...a, id: genId()}));
+      saveInstapayAccounts(state.instapayAccounts);
+    }
+    state.instapayAccountsReady = true;
+    render();
+  }, err => {
+    console.error("instapayAccounts listener error (retry " + retryCount + ")", err);
+    scheduleRetry(retryCount, () => attachInstapayAccountsListener(retryCount + 1));
+  });
+  state.unsubscribers.push(unsub);
+}
+
+/* ✦ NEW: listener لعمولات المحافظ */
+function attachWalletCommissionsListener(retryCount) {
+  const unsub = db.collection("meta").doc("walletCommissions").onSnapshot(snap => {
+    if (snap.exists) {
+      state.walletCommissions = { w1:0, w2:0, w3:0, w4:0, ...snap.data() };
+    } else if (!state.walletCommissionsReady) {
+      const defaults = { w1:0, w2:0, w3:0, w4:0 };
+      state.walletCommissions = defaults;
+      saveWalletCommissions(defaults);
+    }
+    state.walletCommissionsReady = true;
+    render();
+  }, err => {
+    console.error("walletCommissions listener error (retry " + retryCount + ")", err);
+    scheduleRetry(retryCount, () => attachWalletCommissionsListener(retryCount + 1));
+  });
+  state.unsubscribers.push(unsub);
+}
+
 function attachDayListener(retryCount) {
   const unsub = db.collection("days").doc(state.today).onSnapshot(snap => {
     state.dayData = snap.exists ? snap.data() : emptyDay();
     state.dayReady = true;
-    state.connectionError = null; // we're clearly connected now, clear any stale error
+    state.connectionError = null;
     checkReady();
     render();
   }, err => {
@@ -614,7 +739,6 @@ function attachDayListener(retryCount) {
     if (retryCount < LISTENER_RETRY_DELAYS.length) {
       scheduleRetry(retryCount, () => attachDayListener(retryCount + 1));
     } else {
-      // this one is critical (it's what the whole app is built on) — only give up after several tries
       showConnectionError();
     }
   });
@@ -622,11 +746,7 @@ function attachDayListener(retryCount) {
 }
 
 function checkReady() {
-  // only block the UI on today's data - wallet names / machines have safe
-  // defaults and will pop in a moment later if they're still loading.
-  if (state.dayReady) {
-    state.ready = true;
-  }
+  if (state.dayReady) state.ready = true;
 }
 
 function showConnectionError() {
@@ -634,35 +754,29 @@ function showConnectionError() {
   render();
 }
 
+/* ===============================================================
+   Auth
+   =============================================================== */
 const LOGIN_EMAIL_DOMAIN = "@cash.app";
 const BOOT_RETRY_DELAYS = [1000, 2000, 4000, 8000];
 
 async function bootApp(retryCount) {
   retryCount = retryCount || 0;
-  render(); // shows the loading screen immediately
+  render();
   try {
     await waitForFirebaseSDK();
     if (!state.fbReady) {
       firebase.initializeApp(FIREBASE_CONFIG);
       db = firebase.firestore();
       db.settings({ ignoreUndefinedProperties: true });
-      try {
-        await db.enablePersistence({ synchronizeTabs: true });
-      } catch (e) {
-        console.warn("offline persistence not enabled", e.code || e.message);
-      }
+      try { await db.enablePersistence({ synchronizeTabs: true }); } catch (e) { console.warn("offline persistence not enabled", e.code || e.message); }
       state.fbReady = true;
       firebase.auth().onAuthStateChanged(user => {
         state.authUser = user;
         state.authChecked = true;
         state.loginSubmitting = false;
-        if (user) {
-          attachRealtimeListeners();
-          loadUserProfile(user);
-        } else {
-          state.userProfile = null;
-          state.userProfileReady = false;
-        }
+        if (user) { attachRealtimeListeners(); loadUserProfile(user); }
+        else { state.userProfile = null; state.userProfileReady = false; }
         render();
       });
     }
@@ -670,11 +784,8 @@ async function bootApp(retryCount) {
     render();
   } catch (e) {
     console.error("boot failed (attempt " + retryCount + ")", e);
-    if (retryCount < BOOT_RETRY_DELAYS.length) {
-      setTimeout(() => bootApp(retryCount + 1), BOOT_RETRY_DELAYS[retryCount]);
-    } else {
-      showConnectionError();
-    }
+    if (retryCount < BOOT_RETRY_DELAYS.length) setTimeout(() => bootApp(retryCount + 1), BOOT_RETRY_DELAYS[retryCount]);
+    else showConnectionError();
   }
 }
 
@@ -683,24 +794,19 @@ function attemptLogin() {
   const pEl = document.getElementById("login-password");
   const username = (uEl?.value || "").trim().toLowerCase();
   const password = pEl?.value || "";
-  if (!username || !password) {
-    state.loginError = "اكتب اسم المستخدم وكلمة المرور";
-    render();
-    return;
-  }
+  if (!username || !password) { state.loginError = "اكتب اسم المستخدم وكلمة المرور"; render(); return; }
   state.loginError = null;
   state.loginSubmitting = true;
   render();
   const email = username + LOGIN_EMAIL_DOMAIN;
   firebase.auth().signInWithEmailAndPassword(email, password)
     .catch(err => {
-      console.error("login failed", err.code, err.message);
       state.loginSubmitting = false;
       const map = {
-        "auth/operation-not-allowed": `طريقة الدخول (Email/Password) مش مفعّلة في Firebase. روح Authentication → Sign-in method وفعّلها.`,
-        "auth/user-not-found": `مفيش حساب مسجّل بالإيميل "${email}". اتأكد إنك عملته في Authentication → Users بنفس الإيميل ده بالظبط.`,
-        "auth/wrong-password": "كلمة المرور غلط. اتأكد إنها مطابقة بالظبط (فيها حروف كبيرة وصغيرة) من غير مسافات زيادة.",
-        "auth/invalid-credential": `اسم المستخدم أو كلمة المرور مش متطابقين مع الحساب "${email}" في Firebase.`,
+        "auth/operation-not-allowed": `طريقة الدخول (Email/Password) مش مفعّلة في Firebase.`,
+        "auth/user-not-found": `مفيش حساب مسجّل بالإيميل "${email}".`,
+        "auth/wrong-password": "كلمة المرور غلط.",
+        "auth/invalid-credential": `اسم المستخدم أو كلمة المرور مش متطابقين.`,
         "auth/invalid-email": "اسم المستخدم فيه رمز مش مسموح.",
         "auth/user-disabled": "الحساب ده متوقف من Firebase Console.",
         "auth/too-many-requests": "محاولات غلط كتير، استنى شوية وجرب تاني.",
@@ -711,59 +817,38 @@ function attemptLogin() {
     });
 }
 
-/* ---------------- Users & permissions ---------------- */
-// كل مستخدم عنده بروفايل في Firestore (users/{uid}) فيه: username, role ('admin' | 'editor' | 'viewer'), disabled
-// أول حساب يدخل التطبيق (لما تكولكشن "users" تبقى فاضية تمامًا) بيتسجل تلقائيًا كـ "أدمن" (مرة واحدة بس، عشان تأمين الحساب اللي كان بيستخدم التطبيق قبل النظام ده).
-// أي حساب تاني مالوش بروفايل بعد كده بيتعامل كـ "رؤية فقط" افتراضيًا لحد ما الأدمن يحدد له صلاحية، تأمينًا من إن أي خطأ أثناء إنشاء مستخدم يديله صلاحية أدمن غلط.
+/* ===============================================================
+   Users & permissions
+   =============================================================== */
 function loadUserProfile(user) {
   if (!db) return;
   db.collection("users").doc(user.uid).get().then(snap => {
     if (snap.exists) {
       const data = snap.data();
       if (data.disabled) {
-        state.userProfile = null;
-        state.userProfileReady = true;
-        render();
+        state.userProfile = null; state.userProfileReady = true; render();
         alert("الحساب ده متعطّل من الأدمن.");
-        firebase.auth().signOut()
-          .then(() => db ? db.terminate() : null)
-          .then(() => firebase.firestore().clearPersistence())
-          .catch(err => console.warn("disabled-account cleanup failed", err))
-          .finally(() => location.reload());
+        firebase.auth().signOut().then(() => db ? db.terminate() : null).then(() => firebase.firestore().clearPersistence()).catch(err => console.warn("cleanup failed", err)).finally(() => location.reload());
         return;
       }
       state.userProfile = { username: data.username || (user.email||"").split("@")[0], role: data.role || "viewer" };
-      state.userProfileReady = true;
-      render();
-      return;
+      state.userProfileReady = true; render(); return;
     }
-    // مفيش بروفايل لليوزر ده - نتأكد الأول لو ده أول حساب في النظام كله قبل ما نديله أدمن
     db.collection("users").limit(1).get().then(qsnap => {
       const username = (user.email || "").split("@")[0];
       if (qsnap.empty) {
         const profile = { username, role: "admin", disabled: false, createdAt: Date.now() };
         db.collection("users").doc(user.uid).set(profile).catch(err => console.error("seed admin profile failed", err));
         state.userProfile = { username, role: "admin" };
-      } else {
-        state.userProfile = { username, role: "viewer" };
-      }
-      state.userProfileReady = true;
-      render();
-    }).catch(err => {
-      console.error("loadUserProfile bootstrap check failed", err);
-      state.userProfileReady = true;
-      render();
-    });
-  }).catch(err => {
-    console.error("loadUserProfile failed", err);
-    state.userProfileReady = true; // fail-closed: no profile means no edit permission below
-    render();
-  });
+      } else { state.userProfile = { username, role: "viewer" }; }
+      state.userProfileReady = true; render();
+    }).catch(err => { console.error("loadUserProfile bootstrap check failed", err); state.userProfileReady = true; render(); });
+  }).catch(err => { console.error("loadUserProfile failed", err); state.userProfileReady = true; render(); });
 }
 function isAdmin() { return !!state.userProfile && state.userProfile.role === "admin"; }
 function canEdit() { return !!state.userProfile && (state.userProfile.role === "admin" || state.userProfile.role === "editor"); }
 function requireEdit() {
-  if (!canEdit()) { alert("حسابك في وضع (رؤية فقط) ومش هيقدر يعدّل أو يضيف بيانات. كلّم الأدمن لو محتاج صلاحية أعلى."); return false; }
+  if (!canEdit()) { alert("حسابك في وضع (رؤية فقط) ومش هيقدر يعدّل أو يضيف بيانات."); return false; }
   return true;
 }
 function roleLabel(role) {
@@ -771,22 +856,14 @@ function roleLabel(role) {
   if (role === "editor") return "رؤية وتعديل";
   return "رؤية فقط";
 }
-
 function loadUsersList() {
   if (!db) return;
-  state.usersListLoading = true;
-  render();
+  state.usersListLoading = true; render();
   db.collection("users").get().then(snap => {
     state.usersList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    state.usersListLoading = false;
-    render();
-  }).catch(err => {
-    console.error("loadUsersList failed", err);
-    state.usersListLoading = false;
-    render();
-  });
+    state.usersListLoading = false; render();
+  }).catch(err => { console.error("loadUsersList failed", err); state.usersListLoading = false; render(); });
 }
-
 function openAddUserSheet() {
   if (!isAdmin()) { alert("الأدمن بس اللي يقدر يضيف مستخدمين جداد."); return; }
   state.newUserForm = { username: "", password: "", role: "editor" };
@@ -832,7 +909,6 @@ function renderAddUserSheetBody() {
     ${state.addUserError ? `<div class="warn-box">${esc(state.addUserError)}</div>` : ""}
   `;
 }
-
 async function submitAddUser() {
   if (!isAdmin()) return;
   syncAddUserFormFromInputs();
@@ -841,89 +917,65 @@ async function submitAddUser() {
   const role = state.newUserForm.role || "editor";
   if (!username || !password) { state.addUserError = "اكتب اسم المستخدم وكلمة المرور"; render(); return; }
   if (password.length < 6) { state.addUserError = "كلمة المرور لازم تكون 6 أحرف على الأقل"; render(); return; }
-  state.addUserError = null;
-  state.addUserBusy = true;
-  render();
+  state.addUserError = null; state.addUserBusy = true; render();
   const email = username + LOGIN_EMAIL_DOMAIN;
   const secondaryName = "Secondary_" + Date.now();
   let secondaryApp = null;
   try {
-    // بنستخدم Firebase app تانية عشان إنشاء المستخدم الجديد ميعملش تسجيل خروج للأدمن الحالي
     secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, secondaryName);
     const cred = await secondaryApp.auth().createUserWithEmailAndPassword(email, password);
     const uid = cred.user.uid;
-    await db.collection("users").doc(uid).set({
-      username, role, disabled: false, createdAt: Date.now(),
-      createdBy: state.userProfile?.username || "",
-    });
+    await db.collection("users").doc(uid).set({ username, role, disabled: false, createdAt: Date.now(), createdBy: state.userProfile?.username || "" });
     await secondaryApp.auth().signOut();
     await secondaryApp.delete();
-    state.addUserBusy = false;
-    state.sheet = null;
-    state.newUserForm = null;
+    state.addUserBusy = false; state.sheet = null; state.newUserForm = null;
     loadUsersList();
   } catch (err) {
     console.error("create user failed", err);
     if (secondaryApp) { try { await secondaryApp.delete(); } catch(e) {} }
     const map = {
-      "auth/email-already-in-use": "اسم المستخدم ده متسجل بالفعل، اختار اسم تاني.",
-      "auth/weak-password": "كلمة المرور ضعيفة، لازم تكون 6 أحرف على الأقل.",
+      "auth/email-already-in-use": "اسم المستخدم ده متسجل بالفعل.",
+      "auth/weak-password": "كلمة المرور ضعيفة.",
       "auth/invalid-email": "اسم المستخدم فيه رمز مش مسموح.",
-      "auth/operation-not-allowed": "إنشاء مستخدمين جداد مش مفعّل في إعدادات Firebase.",
+      "auth/operation-not-allowed": "إنشاء مستخدمين مش مفعّل في Firebase.",
       "auth/network-request-failed": "مفيش اتصال بالإنترنت.",
     };
     state.addUserError = map[err.code] || `حصل خطأ (${err.code || "غير معروف"}): ${err.message || ""}`;
-    state.addUserBusy = false;
-    render();
+    state.addUserBusy = false; render();
   }
 }
-
 function toggleUserRole(id) {
   if (!isAdmin()) return;
   const u = state.usersList.find(x => x.id === id);
-  if (!u) return;
-  if (u.role === "admin") { alert("مينفعش تغيّر صلاحية الأدمن من هنا."); return; }
+  if (!u || u.role === "admin") { if(u && u.role==="admin") alert("مينفعش تغيّر صلاحية الأدمن."); return; }
   const next = u.role === "editor" ? "viewer" : "editor";
-  db.collection("users").doc(u.id).update({ role: next })
-    .then(() => loadUsersList())
-    .catch(err => alert("فشل تعديل الصلاحية: " + (err.message||err)));
+  db.collection("users").doc(u.id).update({ role: next }).then(() => loadUsersList()).catch(err => alert("فشل: " + (err.message||err)));
 }
 function toggleUserDisabled(id) {
   if (!isAdmin()) return;
   const u = state.usersList.find(x => x.id === id);
-  if (!u) return;
-  if (u.role === "admin") { alert("مينفعش تعطّل حساب الأدمن."); return; }
+  if (!u || u.role === "admin") { if(u && u.role==="admin") alert("مينفعش تعطّل حساب الأدمن."); return; }
   const next = !u.disabled;
   if (!confirm(next ? `تعطيل حساب "${u.username}"؟` : `تفعيل حساب "${u.username}"؟`)) return;
-  db.collection("users").doc(u.id).update({ disabled: next })
-    .then(() => loadUsersList())
-    .catch(err => alert("فشل تعديل الحساب: " + (err.message||err)));
+  db.collection("users").doc(u.id).update({ disabled: next }).then(() => loadUsersList()).catch(err => alert("فشل: " + (err.message||err)));
 }
-
 function logout() {
   if (!confirm("تسجيل الخروج؟")) return;
   (state.unsubscribers || []).forEach(u => { try { u(); } catch(e) {} });
-  state.unsubscribers = [];
-  state.listenersAttached = false;
-  state.ready = false;
-  state.machinesReady = false;
-  state.walletNamesReady = false;
-  state.dayReady = false;
-  state.connectionError = null;
-  state.userProfile = null;
-  state.userProfileReady = false;
-  state.usersList = [];
-
-  // بعد الخروج، بنقفل الاتصال بالكامل ومسح أي بيانات كانت متخزنة محليًا على
-  // الجهاز (IndexedDB offline cache) عشان لو الجهاز مشترك (كمبيوتر/تابلت المحل)
-  // محدش يقدر يفتح الـ DevTools بعد تسجيل الخروج ويشوف بيانات آخر حساب دخل بيه.
+  state.unsubscribers = []; state.listenersAttached = false; state.ready = false;
+  state.machinesReady = false; state.walletNamesReady = false; state.dayReady = false;
+  state.instapayAccountsReady = false; state.walletCommissionsReady = false;
+  state.connectionError = null; state.userProfile = null; state.userProfileReady = false; state.usersList = [];
   firebase.auth().signOut()
     .then(() => db ? db.terminate() : null)
     .then(() => firebase.firestore().clearPersistence())
-    .catch(err => console.warn("logout cleanup (clearPersistence) failed", err))
+    .catch(err => console.warn("logout cleanup failed", err))
     .finally(() => location.reload());
 }
 
+/* ===============================================================
+   Login screen
+   =============================================================== */
 function renderLoginScreen() {
   return `
     <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
@@ -948,7 +1000,9 @@ function renderLoginScreen() {
   `;
 }
 
-/* ---------------- icon helper (self-contained SVGs, no network needed) ---------------- */
+/* ===============================================================
+   Icon helper
+   =============================================================== */
 const ICONS = {
   "store": '<path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a2.2 2.2 0 0 0 4.2 1 2.2 2.2 0 0 0 4 0 2.2 2.2 0 0 0 4 0 2.2 2.2 0 0 0 4.2-1"/><path d="M4.5 9.5V19a1 1 0 0 0 1 1h3.2v-6h6.6v6H18.5a1 1 0 0 0 1-1V9.5"/>',
   "plus": '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
@@ -976,6 +1030,7 @@ const ICONS = {
   "user": '<path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="5"/>',
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
   "rotate-ccw": '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  "smartphone": '<rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>',
 };
 function icon(name, opts) {
   opts = opts || {};
@@ -985,7 +1040,7 @@ function icon(name, opts) {
   const inner = ICONS[name] || "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:middle;${style}">${inner}</svg>`;
 }
-function refreshIcons() { /* no-op: icons are inline SVG, nothing to hydrate */ }
+function refreshIcons() {}
 
 const TINT15 = {
   "var(--steel)": "#e1e7eb",
@@ -995,43 +1050,27 @@ const TINT15 = {
 };
 function tint15(color) { return TINT15[color] || "#eee"; }
 
-/* ---------------- render dispatch ---------------- */
+/* ===============================================================
+   Render dispatch
+   =============================================================== */
 function render() {
   const root = document.getElementById("shell");
-
   if (state.connectionError) {
     root.innerHTML = `
       <div class="loading-wrap">
         ${icon("alert-triangle", {size:32, color:"var(--rust)"})}
         <div class="loading-text" style="color:var(--rust); text-align:center; padding:0 24px;">${esc(state.connectionError)}</div>
         <button class="primary-btn" style="width:auto; padding:11px 22px;" onclick="location.reload()">إعادة المحاولة</button>
-      </div>
-    `;
+      </div>`;
     return;
   }
-
   if (!state.fbReady || !state.authChecked) {
-    root.innerHTML = `
-      <div class="loading-wrap">
-        <div class="spin">${icon("loader-2", {size:32, color:"var(--ink-40)"})}</div>
-        <div class="loading-text">جاري الاتصال...</div>
-      </div>
-    `;
+    root.innerHTML = `<div class="loading-wrap"><div class="spin">${icon("loader-2", {size:32, color:"var(--ink-40)"})}</div><div class="loading-text">جاري الاتصال...</div></div>`;
     return;
   }
-
-  if (!state.authUser) {
-    root.innerHTML = renderLoginScreen();
-    return;
-  }
-
+  if (!state.authUser) { root.innerHTML = renderLoginScreen(); return; }
   if (!state.ready) {
-    root.innerHTML = `
-      <div class="loading-wrap">
-        <div class="spin">${icon("loader-2", {size:32, color:"var(--ink-40)"})}</div>
-        <div class="loading-text">جاري تحميل بيانات المحل...</div>
-      </div>
-    `;
+    root.innerHTML = `<div class="loading-wrap"><div class="spin">${icon("loader-2", {size:32, color:"var(--ink-40)"})}</div><div class="loading-text">جاري تحميل بيانات المحل...</div></div>`;
     return;
   }
 
@@ -1051,8 +1090,7 @@ function render() {
         ${icon("alert-triangle",{size:15,color:"#fff"})}
         <span style="flex:1;">${esc(state.saveError)}</span>
         <button class="icon-btn" onclick="state.saveError=null; render();">${icon("x",{size:14,color:"#fff"})}</button>
-      </div>
-    ` : ""}
+      </div>` : ""}
     <div class="content">${bodyHtml}</div>
     ${renderTabBar()}
     ${state.sheet ? renderSheet() : ""}
@@ -1109,29 +1147,18 @@ function setTab(t) {
   state.tab = t;
   state.viewDate = null;
   if (t === "archive") {
-    state.archiveLoading = true;
-    state.archiveError = null;
-    render();
-    fetchArchiveList().then(list => {
-      state.archiveIndex = list;
-      state.archiveLoading = false;
-      render();
-    }).catch(err => {
-      console.error("fetchArchiveList failed", err);
-      state.archiveError = `تعذر تحميل الأرشيف: ${err.code || ""} ${err.message || err}`;
-      state.archiveLoading = false;
-      render();
-    });
+    state.archiveLoading = true; state.archiveError = null; render();
+    fetchArchiveList().then(list => { state.archiveIndex = list; state.archiveLoading = false; render(); })
+      .catch(err => { state.archiveError = `تعذر تحميل الأرشيف: ${err.code || ""} ${err.message || err}`; state.archiveLoading = false; render(); });
     return;
   }
-  if (t === "services" && isAdmin()) {
-    loadUsersList();
-    return;
-  }
+  if (t === "services" && isAdmin()) { loadUsersList(); return; }
   render();
 }
 
-/* ---------------- Today view ---------------- */
+/* ===============================================================
+   Today view
+   =============================================================== */
 function sectionHeader(key, label, extraRight) {
   const collapsed = !!state.collapsedSections[key];
   return `
@@ -1154,6 +1181,16 @@ function renderBalancesGrid(live) {
       ${icon(state.balancesHidden ? "eye-off" : "eye", {size:15, color:"var(--ink-60)"})}
     </button>
   `;
+
+  /* ✦ انستاباي: اعرض كارت موسّع لو في أكتر من حساب */
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  let instapayHtml = "";
+  if (ipAccounts.length === 1) {
+    instapayHtml = balanceCard("smartphone", ipAccounts[0].name, num(live.instapayAccounts?.[ipAccounts[0].id] ?? live.instapay));
+  } else {
+    instapayHtml = renderInstapayWideCard(live, ipAccounts);
+  }
+
   return `
     <div class="balance-grid-wrap">
       ${sectionHeader("main", "الأرصدة", eyeBtn)}
@@ -1163,7 +1200,7 @@ function renderBalancesGrid(live) {
           ${balanceCard("landmark", "الدرج (مكن)", live.machineDrawer)}
         </div>
         <div class="balance-row-flex" style="margin-bottom:8px;">
-          ${balanceCard("wallet", "رصيد انستاباي", live.instapay)}
+          ${instapayHtml}
         </div>
         ${islamCard(live.islamBalance)}
       `}
@@ -1190,6 +1227,27 @@ function renderBalancesGrid(live) {
     </div>
   `;
 }
+
+/* ✦ NEW: كارت انستاباي موسّع لأكتر من حساب */
+function renderInstapayWideCard(live, accounts) {
+  const subsHtml = accounts.map(acc => {
+    const val = num(live.instapayAccounts?.[acc.id] ?? 0);
+    const display = state.balancesHidden ? "••••" : money(val);
+    return `
+      <div class="instapay-sub-card">
+        <div class="instapay-sub-label">${esc(acc.name)}</div>
+        <div class="instapay-sub-value num ${val < 0 && !state.balancesHidden ? 'negative' : ''}">${display}</div>
+      </div>
+    `;
+  }).join("");
+  return `
+    <div class="instapay-wide-card" style="flex:1;">
+      <div class="instapay-wide-title">${icon("smartphone",{size:14,color:"var(--ink-60)"})} حسابات انستاباي</div>
+      <div class="instapay-subs">${subsHtml}</div>
+    </div>
+  `;
+}
+
 function balanceCard(iconName, label, value, walletId) {
   const neg = value < 0;
   const display = state.balancesHidden ? "••••" : money(value);
@@ -1200,6 +1258,11 @@ function balanceCard(iconName, label, value, walletId) {
     const remColor = remaining < 0 ? "var(--rust)" : "var(--ink-40)";
     const remDisplay = state.balancesHidden ? "••••" : money(remaining);
     limitHtml = `<div class="balance-card-limit num" style="color:${remColor};">متبقي ${remDisplay} من الليميت</div>`;
+    /* ✦ NEW: عمولة المحفظة */
+    const comm = num(state.walletCommissions?.[walletId]);
+    if (comm > 0) {
+      limitHtml += `<div class="balance-card-limit" style="color:var(--gold);">عمولة: <span class="num">${money(comm)}</span> ج.م</div>`;
+    }
   }
   return `
     <div class="balance-card">
@@ -1212,6 +1275,7 @@ function balanceCard(iconName, label, value, walletId) {
     </div>
   `;
 }
+
 function fawryCard(m, live) {
   return `
     <div class="fawry-card">
@@ -1231,6 +1295,7 @@ function fawryCard(m, live) {
     </div>
   `;
 }
+
 function islamCard(value) {
   const v = Number(value) || 0;
   const weOwe = v < 0;
@@ -1242,10 +1307,7 @@ function islamCard(value) {
   const display = state.balancesHidden ? "••••" : money(abs);
   return `
     <div class="balance-card" style="width:100%;">
-      <div class="balance-card-top">
-        ${icon("user", {size:13, color:"var(--ink-40)"})}
-        <div class="balance-card-label">حساب إسلام</div>
-      </div>
+      <div class="balance-card-top">${icon("user", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">حساب إسلام</div></div>
       <div style="display:flex; align-items:baseline; gap:8px;">
         <div class="balance-card-value num" style="color:${color};">${display}</div>
         <div style="font-size:12px; font-weight:700; color:${color};">${statusLabel}</div>
@@ -1307,7 +1369,9 @@ function renderTxRow(tx, editable) {
   } else if (tx.category === "instapay") {
     iconName = tx.subtype === "سحب" ? "arrow-up-circle" : "arrow-down-circle";
     color = tx.subtype === "سحب" ? "var(--steel)" : "var(--emerald)";
-    title = `انستاباي · ${tx.subtype}`;
+    /* ✦ اعرض اسم الحساب */
+    const accName = getInstapayAccountName(tx.instapayAccountId);
+    title = `انستاباي · ${tx.subtype} · ${esc(accName)}`;
   } else if (tx.category === "islam") {
     iconName = tx.subtype === "سحب" ? "arrow-up-circle" : "arrow-down-circle";
     color = tx.subtype === "سحب" ? "var(--steel)" : "var(--emerald)";
@@ -1320,13 +1384,11 @@ function renderTxRow(tx, editable) {
     title = `نقدية · ${esc(tx.destination || "—")}`;
   } else {
     const m = state.machines.find(m=>m.id===tx.machineId);
-    if (tx.machineSub === "فيزا") {
-      iconName = "arrow-up-circle"; color = "var(--steel)";
-    } else {
-      iconName = "zap"; color = "var(--gold)";
-    }
+    if (tx.machineSub === "فيزا") { iconName = "arrow-up-circle"; color = "var(--steel)"; }
+    else { iconName = "zap"; color = "var(--gold)"; }
     title = `شحن مكن · ${esc(m ? m.name : "—")}${tx.machineSub ? " · " + esc(tx.machineSub) : ""}`;
   }
+  const comm = num(tx.commission);
   return `
     <div class="tx-row">
       <div class="tx-row-icon" style="background: ${tint15(color)};">
@@ -1339,6 +1401,7 @@ function renderTxRow(tx, editable) {
       <div class="tx-row-amt">
         <div class="tx-row-amt-val num">${money(tx.amount)}</div>
         ${num(tx.profit) > 0 ? `<div class="tx-row-profit num">+${money(tx.profit)} مكسب</div>` : ""}
+        ${comm > 0 ? `<div class="tx-row-commission num">-${money(comm)} عمولة</div>` : ""}
       </div>
       ${editable ? `
         <div class="tx-row-actions">
@@ -1350,7 +1413,16 @@ function renderTxRow(tx, editable) {
   `;
 }
 
+/* ✦ Helper: اسم حساب انستاباي */
+function getInstapayAccountName(id) {
+  if (!id) return "انستاباي";
+  const acc = (state.instapayAccounts || []).find(a => a.id === id);
+  return acc ? acc.name : "انستاباي";
+}
+
 function renderClosedStamp(closing, live, closedBy) {
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const ipDiffs = ipAccounts.map(acc => num(closing.instapayAccounts?.[acc.id] ?? closing.instapay ?? 0) - num(live.instapayAccounts?.[acc.id] ?? 0));
   const machineDiffs = state.machines.map(m => {
     const subs = machineSubs(m);
     if (subs) return subs.map(s => machineBalValue(closing.machines?.[m.id], s) - machineBalValue(live.machines?.[m.id], s));
@@ -1360,7 +1432,7 @@ function renderClosedStamp(closing, live, closedBy) {
     num(closing.drawer) - live.drawer,
     num(closing.machineDrawer) - live.machineDrawer,
     ...WALLET_IDS.map(id => num(closing.wallets?.[id]) - live.wallets[id]),
-    num(closing.instapay) - live.instapay,
+    ...ipDiffs,
     ...machineDiffs,
     num(closing.islamBalance) - live.islamBalance,
   ];
@@ -1388,18 +1460,16 @@ async function downloadDayPDF(dayKey, dayData) {
   const btn = document.getElementById("pdf-download-btn");
   const btnOriginal = btn ? btn.innerHTML : null;
   if (btn) { btn.disabled = true; btn.innerHTML = `${icon("loader-2",{size:16,color:"currentColor",style:"animation:spin 1s linear infinite;"})} جاري التجهيز...`; }
-
   try {
     const live = computeLive(dayData);
     const profitTotal = (dayData.transactions || []).reduce((a,t)=>a+num(t.profit), 0);
     const txs = [...(dayData.transactions || [])].reverse();
-
     const wrap = document.createElement("div");
     wrap.style.cssText = "position:fixed; top:0; left:-99999px; width:760px; background:#ffffff; padding:28px; font-family:'Tajawal',sans-serif; direction:rtl; color:#17262b;";
     wrap.innerHTML = `
       <div style="font-family:'Cairo',sans-serif; font-weight:800; font-size:20px; margin-bottom:4px;">دفتر المحل — تقرير يوم</div>
       <div style="font-size:13px; color:#5a6b70; margin-bottom:18px;">${displayDate(dayKey)}${dayData.closedAt ? " · اتقفل الساعة " + dayData.closedAt : ""}</div>
-      <div style="font-size:14.5px; font-weight:700; margin-bottom:16px;">مكسب اليوم: <span class="num" style="font-family:'JetBrains Mono',monospace;">${money(profitTotal)}</span> ج.م</div>
+      <div style="font-size:14.5px; font-weight:700; margin-bottom:16px;">مكسب اليوم: <span class="num">${money(profitTotal)}</span> ج.م</div>
       ${dayData.status === "closed" && dayData.closing ? renderClosedStamp(dayData.closing, live, dayData.closedBy) : ""}
       ${renderBalancesGrid(live)}
       <div class="section-title">المعاملات (${txs.length})</div>
@@ -1408,30 +1478,25 @@ async function downloadDayPDF(dayKey, dayData) {
       </div>
     `;
     document.body.appendChild(wrap);
-
     const canvas = await html2canvas(wrap, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
     document.body.removeChild(wrap);
-
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF("p", "mm", "a4");
     const pageWidth = 210, pageHeight = 297;
     const imgWidth = pageWidth;
     const imgHeight = canvas.height * imgWidth / canvas.width;
     const imgData = canvas.toDataURL("image/png");
-    let heightLeft = imgHeight;
-    let position = 0;
+    let heightLeft = imgHeight, position = 0;
     pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
     heightLeft -= pageHeight;
     while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
-      pdf.addPage();
+      position = heightLeft - imgHeight; pdf.addPage();
       pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
       heightLeft -= pageHeight;
     }
     pdf.save(`تقرير-${dayKey}.pdf`);
   } catch (e) {
-    console.error(e);
-    alert("حصل خطأ أثناء إنشاء الـ PDF.");
+    console.error(e); alert("حصل خطأ أثناء إنشاء الـ PDF.");
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = btnOriginal; }
   }
@@ -1447,36 +1512,33 @@ function confirmDeleteTx(id) {
     render();
   }
 }
+function attachTodayEvents() {}
 
-function attachTodayEvents() { /* using inline onclick handlers, nothing extra needed */ }
-
-/* ---------------- Start Day Sheet ---------------- */
+/* ===============================================================
+   Start Day Sheet
+   =============================================================== */
 function openStartSheet() { if (!requireEdit()) return; state.sheet = "start"; render(); }
 
 function confirmStartNewDay() {
   if (!requireEdit()) return;
-  if (state.dayData.status === "not_started") {
-    openStartSheet();
-    return;
-  }
+  if (state.dayData.status === "not_started") { openStartSheet(); return; }
   const msg = state.dayData.status === "closed"
-    ? "هيتم مسح بيانات اليوم الحالي (المقفول) وهتقدر تبدأ يوم جديد من الأول بأرصدة جديدة. متأكد؟"
-    : "اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي (المعاملات والأرصدة). متأكد إنك عايز تبدأ من الأول؟";
+    ? "هيتم مسح بيانات اليوم الحالي (المقفول) وهتقدر تبدأ يوم جديد. متأكد؟"
+    : "اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي. متأكد؟";
   if (confirm(msg)) {
-    // safety snapshot: keep a copy of today's data before wiping it, in case of accidental reset
     if (db && (state.dayData.transactions || []).length > 0) {
       db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
         .catch(err => console.error("backup before reset failed", err));
     }
     state.dayData = emptyDay();
     persistDay(state.today, state.dayData);
-    state.tab = "today";
-    state.sheet = null;
+    state.tab = "today"; state.sheet = null;
     openStartSheet();
   }
 }
 
 function renderStartSheet() {
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   return `
     <div class="field-row">
       <div class="field">
@@ -1497,14 +1559,17 @@ function renderStartSheet() {
         </div>
       `).join("")}
     </div>
-    <div class="field">
-      <div class="field-label">رصيد انستاباي</div>
-      <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-instapay">
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">حسابات انستاباي</div>
+    <div class="${ipAccounts.length > 1 ? 'field-2col' : ''}">
+      ${ipAccounts.map(acc => `
+        <div class="field">
+          <div class="field-label">${esc(acc.name)}</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-instapay-${acc.id}">
+        </div>
+      `).join("")}
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">أرصدة مكن الشحن</div>
-    ${state.machines.length === 0 ? `
-      <div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة. تقدر تضيفها من تاب "الخدمات".</div>
-    ` : `
+    ${state.machines.length === 0 ? `<div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>` : `
       <div class="field-2col">
         ${state.machines.map(m => {
           const subs = machineSubs(m);
@@ -1514,12 +1579,7 @@ function renderStartSheet() {
               <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}-${s}">
             </div>
           `).join("");
-          return `
-          <div class="field">
-            <div class="field-label">${esc(m.name)}</div>
-            <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}">
-          </div>
-        `;
+          return `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}"></div>`;
         }).join("")}
       </div>
     `}
@@ -1535,11 +1595,18 @@ function submitStartDay() {
   if (state.dayData.status !== "not_started" && (state.dayData.transactions || []).length > 0) {
     if (!confirm("فيه معاملات مسجلة بالفعل النهاردة! لو كملت هيتمسحوا نهائيًا. متأكد؟")) return;
   }
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const instapayAccountsData = {};
+  ipAccounts.forEach(acc => {
+    const el = document.getElementById(`sd-instapay-${acc.id}`);
+    instapayAccountsData[acc.id] = el ? num(el.value) : 0;
+  });
   const opening = {
     drawer: num(document.getElementById("sd-drawer").value),
     machineDrawer: num(document.getElementById("sd-machineDrawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
-    instapay: num(document.getElementById("sd-instapay").value),
+    instapay: 0, // legacy compat
+    instapayAccounts: instapayAccountsData,
     machines: Object.fromEntries(state.machines.map(m => {
       const subs = machineSubs(m);
       if (subs) {
@@ -1559,90 +1626,72 @@ function submitStartDay() {
   render();
 }
 
-/* ---------------- Edit Opening Balances Sheet ---------------- */
+/* ===============================================================
+   Edit Opening Sheet
+   =============================================================== */
 function openEditOpeningSheet() {
   if (!requireEdit()) return;
-  if (state.dayData.status === "not_started") {
-    alert("لسه اليوم مبدأش. استخدم زرار «بدء اليوم» الأول عشان تسجّل الأرصدة الافتتاحية.");
-    return;
-  }
-  state.sheet = "editOpening";
-  render();
+  if (state.dayData.status === "not_started") { alert("لسه اليوم مبدأش."); return; }
+  state.sheet = "editOpening"; render();
 }
 
 function renderEditOpeningSheet() {
   const o = state.dayData.opening || emptyOpening();
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   return `
     <div class="warn-box" style="color:var(--ink-60); background:var(--paper-2);">
-      تعديل الأرصدة الافتتاحية هيأثر على كل الأرصدة الحالية والفروقات المحسوبة النهاردة، لأن كل المعاملات بتتحسب فوق الرصيد ده.
+      تعديل الأرصدة الافتتاحية هيأثر على كل الأرصدة الحالية والفروقات المحسوبة النهاردة.
     </div>
     <div class="field-row">
-      <div class="field">
-        <div class="field-label">الدرج (كاش)</div>
-        <input type="number" inputmode="decimal" class="input" value="${o.drawer || ''}" id="eo-drawer">
-      </div>
-      <div class="field">
-        <div class="field-label">الدرج (مكن)</div>
-        <input type="number" inputmode="decimal" class="input" value="${o.machineDrawer || ''}" id="eo-machineDrawer">
-      </div>
+      <div class="field"><div class="field-label">الدرج (كاش)</div><input type="number" inputmode="decimal" class="input" value="${o.drawer || ''}" id="eo-drawer"></div>
+      <div class="field"><div class="field-label">الدرج (مكن)</div><input type="number" inputmode="decimal" class="input" value="${o.machineDrawer || ''}" id="eo-machineDrawer"></div>
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
     <div class="field-2col">
-      ${WALLET_IDS.map(id => `
+      ${WALLET_IDS.map(id => `<div class="field"><div class="field-label">${esc(state.walletNames[id])}</div><input type="number" inputmode="decimal" class="input" value="${o.wallets?.[id] || ''}" id="eo-wallet-${id}"></div>`).join("")}
+    </div>
+    <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">حسابات انستاباي</div>
+    <div class="${ipAccounts.length > 1 ? 'field-2col' : ''}">
+      ${ipAccounts.map(acc => `
         <div class="field">
-          <div class="field-label">${esc(state.walletNames[id])}</div>
-          <input type="number" inputmode="decimal" class="input" value="${o.wallets?.[id] || ''}" id="eo-wallet-${id}">
+          <div class="field-label">${esc(acc.name)}</div>
+          <input type="number" inputmode="decimal" class="input" value="${num(o.instapayAccounts?.[acc.id] ?? 0) || ''}" id="eo-instapay-${acc.id}">
         </div>
       `).join("")}
     </div>
-    <div class="field">
-      <div class="field-label">رصيد انستاباي</div>
-      <input type="number" inputmode="decimal" class="input" value="${o.instapay || ''}" id="eo-instapay">
-    </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">أرصدة مكن الشحن</div>
-    ${state.machines.length === 0 ? `
-      <div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>
-    ` : `
+    ${state.machines.length === 0 ? `<div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>` : `
       <div class="field-2col">
         ${state.machines.map(m => {
           const subs = machineSubs(m);
-          if (subs) return subs.map(s => `
-            <div class="field">
-              <div class="field-label">${esc(m.name)} - ${s}</div>
-              <input type="number" inputmode="decimal" class="input" value="${machineBalValue(o.machines?.[m.id], s) || ''}" id="eo-machine-${m.id}-${s}">
-            </div>
-          `).join("");
-          return `
-          <div class="field">
-            <div class="field-label">${esc(m.name)}</div>
-            <input type="number" inputmode="decimal" class="input" value="${o.machines?.[m.id] || ''}" id="eo-machine-${m.id}">
-          </div>
-        `;
+          if (subs) return subs.map(s => `<div class="field"><div class="field-label">${esc(m.name)} - ${s}</div><input type="number" inputmode="decimal" class="input" value="${machineBalValue(o.machines?.[m.id], s) || ''}" id="eo-machine-${m.id}-${s}"></div>`).join("");
+          return `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" value="${o.machines?.[m.id] || ''}" id="eo-machine-${m.id}"></div>`;
         }).join("")}
       </div>
     `}
-    <div class="field">
-      <div class="field-label">رصيد حساب إسلام</div>
-      <input type="number" inputmode="decimal" class="input" value="${o.islamBalance || ''}" id="eo-islam">
-    </div>
+    <div class="field"><div class="field-label">رصيد حساب إسلام</div><input type="number" inputmode="decimal" class="input" value="${o.islamBalance || ''}" id="eo-islam"></div>
   `;
 }
 
 function submitEditOpening() {
   if (!requireEdit()) return;
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const instapayAccountsData = {};
+  ipAccounts.forEach(acc => {
+    const el = document.getElementById(`eo-instapay-${acc.id}`);
+    instapayAccountsData[acc.id] = el ? num(el.value) : num(state.dayData.opening?.instapayAccounts?.[acc.id]);
+  });
   const opening = {
     drawer: num(document.getElementById("eo-drawer").value),
     machineDrawer: num(document.getElementById("eo-machineDrawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`eo-wallet-${id}`).value)])),
-    instapay: num(document.getElementById("eo-instapay").value),
+    instapay: 0,
+    instapayAccounts: instapayAccountsData,
     machines: Object.fromEntries(state.machines.map(m => {
       const subs = machineSubs(m);
       if (subs) {
         const obj = {};
-        subs.forEach(s => {
-          const el = document.getElementById(`eo-machine-${m.id}-${s}`);
-          obj[s] = el ? num(el.value) : machineBalValue(state.dayData.opening?.machines?.[m.id], s);
-        });
+        subs.forEach(s => { const el = document.getElementById(`eo-machine-${m.id}-${s}`); obj[s] = el ? num(el.value) : machineBalValue(state.dayData.opening?.machines?.[m.id], s); });
         return [m.id, obj];
       }
       const el = document.getElementById(`eo-machine-${m.id}`);
@@ -1656,10 +1705,13 @@ function submitEditOpening() {
   render();
 }
 
-/* ---------------- Transaction Sheet ---------------- */
+/* ===============================================================
+   Transaction Sheet  ✦ مُحدَّث
+   =============================================================== */
 function openTxSheet(txId) {
   if (!requireEdit()) return;
   const initial = txId ? state.dayData.transactions.find(t => t.id === txId) : null;
+  const firstIpId = (state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS)[0]?.id || "ip1";
   state.txForm = {
     id: initial?.id || null,
     time: initial?.time || null,
@@ -1668,30 +1720,21 @@ function openTxSheet(txId) {
     walletId: initial?.walletId || "w1",
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
     machineSub: initial?.machineSub || null,
+    instapayAccountId: initial?.instapayAccountId || firstIpId, // ✦ NEW
     destination: initial?.destination ?? "",
     amount: initial?.amount ?? "",
     profit: initial?.profit ?? "",
+    commission: initial?.commission ?? "",  // ✦ NEW
     note: initial?.note ?? "",
   };
   state.sheet = "tx";
   render();
 }
 
-function txSelectCategory(cat) {
-  syncTxFormFromInputs();
-  state.txForm.category = cat;
-  refreshSheetOnly();
-}
-function txSelectSubtype(st) {
-  syncTxFormFromInputs();
-  state.txForm.subtype = st;
-  refreshSheetOnly();
-}
-function txSelectWallet(id) {
-  syncTxFormFromInputs();
-  state.txForm.walletId = id;
-  refreshSheetOnly();
-}
+function txSelectCategory(cat) { syncTxFormFromInputs(); state.txForm.category = cat; refreshSheetOnly(); }
+function txSelectSubtype(st) { syncTxFormFromInputs(); state.txForm.subtype = st; refreshSheetOnly(); }
+function txSelectWallet(id) { syncTxFormFromInputs(); state.txForm.walletId = id; refreshSheetOnly(); }
+function txSelectInstapayAccount(id) { syncTxFormFromInputs(); state.txForm.instapayAccountId = id; refreshSheetOnly(); } // ✦ NEW
 function txSelectMachine(id) {
   syncTxFormFromInputs();
   state.txForm.machineId = id;
@@ -1699,24 +1742,21 @@ function txSelectMachine(id) {
   state.txForm.machineSub = machineSubs(m) ? (state.txForm.machineSub && machineSubs(m).includes(state.txForm.machineSub) ? state.txForm.machineSub : null) : null;
   refreshSheetOnly();
 }
-function txSelectMachineSub(sub) {
-  syncTxFormFromInputs();
-  state.txForm.machineSub = sub;
-  refreshSheetOnly();
-}
+function txSelectMachineSub(sub) { syncTxFormFromInputs(); state.txForm.machineSub = sub; refreshSheetOnly(); }
+
 function syncTxFormFromInputs() {
-  const amt = document.getElementById("tx-amount");
-  const prof = document.getElementById("tx-profit");
-  const note = document.getElementById("tx-note");
-  const dest = document.getElementById("tx-destination");
-  if (amt) state.txForm.amount = amt.value;
-  if (prof) state.txForm.profit = prof.value;
-  if (note) state.txForm.note = note.value;
-  if (dest) state.txForm.destination = dest.value;
+  const get = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
+  if (get("tx-amount") !== undefined) state.txForm.amount = get("tx-amount");
+  if (get("tx-profit") !== undefined) state.txForm.profit = get("tx-profit");
+  if (get("tx-commission") !== undefined) state.txForm.commission = get("tx-commission"); // ✦ NEW
+  if (get("tx-note") !== undefined) state.txForm.note = get("tx-note");
+  if (get("tx-destination") !== undefined) state.txForm.destination = get("tx-destination");
 }
 
 function renderTxSheetBody() {
   const f = state.txForm;
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+
   let html = `
     <div class="field">
       <div class="field-label">الخدمة</div>
@@ -1740,11 +1780,25 @@ function renderTxSheetBody() {
     `;
   }
 
+  /* ✦ NEW: اختيار حساب انستاباي */
+  if (f.category === "instapay") {
+    if (ipAccounts.length > 1) {
+      html += `
+        <div class="field">
+          <div class="field-label">حساب انستاباي</div>
+          <div class="chip-row wrap">
+            ${ipAccounts.map(acc => `
+              <button class="chip-btn small ${f.instapayAccountId===acc.id?'active':''}" onclick="txSelectInstapayAccount('${acc.id}')">${esc(acc.name)}</button>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+  }
+
   if (f.category === "islam") {
     html += `<div class="warn-box" style="color:var(--ink-60); background:var(--paper-2);">
-      ${f.subtype === 'سحب'
-        ? 'العميل سحب كاش وحوّل على حساب إسلام (مش محفظتنا) → هيتسجل إن لينا مبلغ عند إسلام.'
-        : 'حوّلنا/اتحول من حساب إسلام بدل محفظتنا → هيتسجل إن لإسلام عندنا مبلغ.'}
+      ${f.subtype === 'سحب' ? 'العميل سحب كاش وحوّل على حساب إسلام → هيتسجل إن لينا مبلغ عند إسلام.' : 'حوّلنا من حساب إسلام بدل محفظتنا → هيتسجل إن لإسلام عندنا مبلغ.'}
     </div>`;
   }
 
@@ -1763,7 +1817,7 @@ function renderTxSheetBody() {
 
   if (f.category === "machine") {
     if (state.machines.length === 0) {
-      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الخدمات" وضيف المكينة الأول (زي فوري أو أوباي).</div>`;
+      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الخدمات" وضيف المكينة الأول.</div>`;
     } else {
       html += `
         <div class="field">
@@ -1796,29 +1850,34 @@ function renderTxSheetBody() {
   }
 
   if (f.category === "expense") {
-    html += `
-      <div class="field">
-        <div class="field-label">المكان / الشخص اللي خرج له المبلغ</div>
-        <input type="text" class="input" placeholder="مثال: مندوب المكن، صاحب المحل..." id="tx-destination" value="${esc(f.destination||"")}">
-      </div>
-    `;
+    html += `<div class="field"><div class="field-label">المكان / الشخص اللي خرج له المبلغ</div><input type="text" class="input" placeholder="مثال: مندوب المكن، صاحب المحل..." id="tx-destination" value="${esc(f.destination||"")}"></div>`;
   }
-
   if (f.category === "cash") {
-    html += `
-      <div class="field">
-        <div class="field-label">اسم المودع</div>
-        <input type="text" class="input" placeholder="اسم الشخص اللي أودع المبلغ" id="tx-destination" value="${esc(f.destination||"")}">
-      </div>
-    `;
+    html += `<div class="field"><div class="field-label">اسم المودع</div><input type="text" class="input" placeholder="اسم الشخص اللي أودع المبلغ" id="tx-destination" value="${esc(f.destination||"")}"></div>`;
   }
 
   if (f.category === "expense" || f.category === "cash") {
+    html += `<div class="field"><div class="field-label">المبلغ (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
+  } else if (f.category === "vodafone") {
+    /* ✦ فودافون: المبلغ + المكسب + عمولة المحفظة (3 خانات) */
+    const defaultComm = num(state.walletCommissions?.[f.walletId] || 0);
+    const commVal = f.commission !== "" ? f.commission : (defaultComm > 0 ? defaultComm : "");
     html += `
-      <div class="field">
-        <div class="field-label">المبلغ (ج.م)</div>
-        <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+      <div class="field-3col" style="margin-bottom:14px;">
+        <div class="field" style="margin-bottom:0;">
+          <div class="field-label">المبلغ (ج.م)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <div class="field-label">المكسب</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <div class="field-label">عمولة المحفظة</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(commVal)}">
+        </div>
       </div>
+      ${defaultComm > 0 ? `<div class="info-box" style="margin-top:-8px;">العمولة الافتراضية لهذه المحفظة: <span class="num" style="font-weight:700;">${money(defaultComm)}</span> ج.م</div>` : ""}
     `;
   } else {
     html += `
@@ -1835,12 +1894,7 @@ function renderTxSheetBody() {
     `;
   }
 
-  html += `
-    <div class="field">
-      <div class="field-label">ملاحظة (اختياري)</div>
-      <input type="text" class="input" placeholder="تفاصيل إضافية" id="tx-note" value="${esc(f.note)}">
-    </div>
-  `;
+  html += `<div class="field"><div class="field-label">ملاحظة (اختياري)</div><input type="text" class="input" placeholder="تفاصيل إضافية" id="tx-note" value="${esc(f.note)}"></div>`;
   return html;
 }
 
@@ -1862,7 +1916,6 @@ function applyLimitDelta(oldTx, newTx) {
 }
 
 function validateMachineBalances(newTxs) {
-  // مفيش رصيد يسلب في أي مكينة (أو أي بند فرعي فيها) غير بند "مدفوعات" في فوري
   const live = computeLive({ ...state.dayData, transactions: newTxs });
   for (const m of state.machines) {
     const subs = machineSubs(m);
@@ -1886,51 +1939,52 @@ function submitTx() {
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
   if (!(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
-  if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول من تاب \"الخدمات\" قبل ما تسجل معاملة شحن."); return; }
+  if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
   const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
   const selSubs = selMachine ? machineSubs(selMachine) : null;
   if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
-  if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص اللي المبلغ خرج له."); return; }
+  if (f.category === "expense" && !destTrimmed) { alert("اكتب اسم الجهة أو الشخص."); return; }
   if (f.category === "cash" && !destTrimmed) { alert("اكتب اسم المودع."); return; }
+
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
   const currentUsername = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "";
+
   const tx = {
     id: f.id, time: f.time, category: f.category,
     subtype: f.category === "machine" ? "شحن" : (f.category === "expense" ? "خوارج" : (f.category === "cash" ? "نقدية" : f.subtype)),
     walletId: f.category === "vodafone" ? f.walletId : undefined,
     machineId: f.category === "machine" ? f.machineId : undefined,
     machineSub: (f.category === "machine" && selSubs) ? f.machineSub : undefined,
+    instapayAccountId: f.category === "instapay" ? (f.instapayAccountId || (state.instapayAccounts||[])[0]?.id) : undefined, // ✦ NEW
     destination: (f.category === "expense" || f.category === "cash") ? destTrimmed : undefined,
     amount: num(f.amount),
     profit: (f.category === "expense" || f.category === "cash") ? 0 : (num(f.profit) || 0),
+    commission: f.category === "vodafone" ? (num(f.commission) || 0) : 0,  // ✦ NEW
     note: (f.note||"").trim(),
     createdBy: oldTx?.createdBy || currentUsername,
     editedBy: oldTx ? currentUsername : undefined,
   };
   Object.keys(tx).forEach(k => { if (tx[k] === undefined) delete tx[k]; });
+
   let txs;
   if (tx.id) txs = state.dayData.transactions.map(t => t.id === tx.id ? { ...tx } : t);
   else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: timeNow() }];
+
   if (tx.category === "machine" && !validateMachineBalances(txs)) {
-    alert("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح، برجاء تعديل الرصيد والمحاولة مرة أخرى");
+    alert("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح.");
     return;
   }
   state.dayData = { ...state.dayData, transactions: txs };
-  try {
-    persistDay(state.today, state.dayData);
-  } catch (err) {
-    console.error("submitTx save failed", err);
-    alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err));
-    return; // keep the sheet open so the user doesn't lose what they typed
-  }
+  try { persistDay(state.today, state.dayData); }
+  catch (err) { console.error("submitTx save failed", err); alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err)); return; }
   applyLimitDelta(oldTx, tx);
-  state.sheet = null;
-  state.txForm = null;
+  state.sheet = null; state.txForm = null;
   render();
 }
 
-
-/* ---------------- Close Day Sheet ---------------- */
+/* ===============================================================
+   Close Day Sheet  ✦ مُحدَّث لحسابات انستاباي المتعددة
+   =============================================================== */
 function openCloseSheet() { if (!requireEdit()) return; state.sheet = "close"; render(); }
 
 function closeRowInputChanged(kind, id, sub) {
@@ -1939,12 +1993,14 @@ function closeRowInputChanged(kind, id, sub) {
   if (kind === "drawer") { expected = live.drawer; inputId = "cd-drawer"; diffId = "cd-diff-drawer"; }
   else if (kind === "machineDrawer") { expected = live.machineDrawer; inputId = "cd-machineDrawer"; diffId = "cd-diff-machineDrawer"; }
   else if (kind === "wallet") { expected = live.wallets[id]; inputId = `cd-wallet-${id}`; diffId = `cd-diff-wallet-${id}`; }
-  else if (kind === "instapay") { expected = live.instapay; inputId = "cd-instapay"; diffId = "cd-diff-instapay"; }
+  else if (kind === "instapayAcc") { expected = num(live.instapayAccounts?.[id] ?? 0); inputId = `cd-instapay-${id}`; diffId = `cd-diff-instapay-${id}`; }
   else if (kind === "machine") { expected = num(live.machines?.[id]); inputId = `cd-machine-${id}`; diffId = `cd-diff-machine-${id}`; }
   else if (kind === "machineSub") { expected = machineBalValue(live.machines?.[id], sub); inputId = `cd-machine-${id}-${sub}`; diffId = `cd-diff-machine-${id}-${sub}`; }
   else if (kind === "islam") { expected = live.islamBalance; inputId = "cd-islam"; diffId = "cd-diff-islam"; }
-  const val = document.getElementById(inputId).value;
+  const el = document.getElementById(inputId);
   const diffEl = document.getElementById(diffId);
+  if (!el || !diffEl) return;
+  const val = el.value;
   if (val === "") { diffEl.innerHTML = ""; return; }
   const diff = num(val) - expected;
   const ok = Math.abs(diff) < 0.01;
@@ -1954,6 +2010,7 @@ function closeRowInputChanged(kind, id, sub) {
 
 function renderCloseSheetBody() {
   const live = computeLive(state.dayData);
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const row = (label, expected, inputId, diffId, onchange) => `
     <div class="close-row">
       <div class="close-row-top">
@@ -1982,7 +2039,11 @@ function renderCloseSheetBody() {
   WALLET_IDS.forEach(id => {
     html += row(state.walletNames[id], live.wallets[id], `cd-wallet-${id}`, `cd-diff-wallet-${id}`, `closeRowInputChanged('wallet','${id}')`);
   });
-  html += row("رصيد انستاباي", live.instapay, "cd-instapay", "cd-diff-instapay", "closeRowInputChanged('instapay')");
+  /* ✦ NEW: جرد كل حساب انستاباي على حدة */
+  ipAccounts.forEach(acc => {
+    const bal = num(live.instapayAccounts?.[acc.id] ?? 0);
+    html += row(acc.name, bal, `cd-instapay-${acc.id}`, `cd-diff-instapay-${acc.id}`, `closeRowInputChanged('instapayAcc','${acc.id}')`);
+  });
   state.machines.forEach(m => {
     const subs = machineSubs(m);
     if (subs) {
@@ -1999,11 +2060,18 @@ function renderCloseSheetBody() {
 
 function submitCloseDay() {
   if (!requireEdit()) return;
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const instapayAccountsData = {};
+  ipAccounts.forEach(acc => {
+    const el = document.getElementById(`cd-instapay-${acc.id}`);
+    instapayAccountsData[acc.id] = el ? num(el.value) : 0;
+  });
   const closing = {
     drawer: num(document.getElementById("cd-drawer").value),
     machineDrawer: num(document.getElementById("cd-machineDrawer").value),
     wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`cd-wallet-${id}`).value)])),
-    instapay: num(document.getElementById("cd-instapay").value),
+    instapay: 0,
+    instapayAccounts: instapayAccountsData,
     machines: Object.fromEntries(state.machines.map(m => {
       const subs = machineSubs(m);
       if (subs) {
@@ -2022,61 +2090,105 @@ function submitCloseDay() {
   render();
 }
 
-/* ---------------- Add Machine Sheet ---------------- */
+/* ===============================================================
+   Add Machine Sheet
+   =============================================================== */
 function openAddMachineSheet() { if (!requireEdit()) return; state.sheet = "addMachine"; render(); }
-
 function renderAddMachineSheetBody() {
-  return `
-    <div class="field">
-      <div class="field-label">اسم المكينة</div>
-      <input type="text" class="input" placeholder="مثال: فوري" id="am-name" autofocus oninput="updateAddMachineBtn()">
-    </div>
-  `;
+  return `<div class="field"><div class="field-label">اسم المكينة</div><input type="text" class="input" placeholder="مثال: فوري" id="am-name" autofocus oninput="updateAddMachineBtn()"></div>`;
 }
 function updateAddMachineBtn() {
-  const val = document.getElementById("am-name").value.trim();
+  const val = (document.getElementById("am-name")?.value || "").trim();
   const btn = document.getElementById("am-submit-btn");
   if (btn) btn.disabled = !val;
 }
 function submitAddMachine() {
   if (!requireEdit()) return;
-  const name = document.getElementById("am-name").value.trim();
+  const name = (document.getElementById("am-name")?.value || "").trim();
   if (!name) return;
   state.machines = [...state.machines, { id: genId(), name }];
   saveMachines(state.machines);
-  state.sheet = null;
+  state.sheet = null; render();
+}
+
+/* ===============================================================
+   ✦ NEW: Add Instapay Account Sheet
+   =============================================================== */
+function openAddInstapaySheet() {
+  if (!requireEdit()) return;
+  state.sheet = "addInstapay";
+  render();
+}
+function renderAddInstapaySheetBody() {
+  return `<div class="field"><div class="field-label">اسم حساب انستاباي</div><input type="text" class="input" placeholder="مثال: انستاباي محمد" id="ai-name" autofocus oninput="updateAddInstapayBtn()"></div>`;
+}
+function updateAddInstapayBtn() {
+  const val = (document.getElementById("ai-name")?.value || "").trim();
+  const btn = document.getElementById("ai-submit-btn");
+  if (btn) btn.disabled = !val;
+}
+function submitAddInstapay() {
+  if (!requireEdit()) return;
+  const name = (document.getElementById("ai-name")?.value || "").trim();
+  if (!name) return;
+  state.instapayAccounts = [...(state.instapayAccounts || []), { id: genId(), name }];
+  saveInstapayAccounts(state.instapayAccounts);
+  state.sheet = null; render();
+}
+function confirmDeleteInstapay(id, name) {
+  if (!requireEdit()) return;
+  if ((state.instapayAccounts || []).length <= 1) { alert("لازم يفضل حساب انستاباي واحد على الأقل."); return; }
+  if (confirm(`حذف "${name}"؟`)) {
+    state.instapayAccounts = (state.instapayAccounts || []).filter(a => a.id !== id);
+    saveInstapayAccounts(state.instapayAccounts);
+    render();
+  }
+}
+function startEditInstapay(id) {
+  if (!requireEdit()) return;
+  state.editingInstapayId = id;
+  render();
+}
+function saveInstapayName(id) {
+  if (!requireEdit()) { state.editingInstapayId = null; render(); return; }
+  const el = document.getElementById("instapay-edit-input");
+  const name = el ? el.value.trim() : "";
+  if (name) {
+    state.instapayAccounts = (state.instapayAccounts || []).map(a => a.id === id ? { ...a, name } : a);
+    saveInstapayAccounts(state.instapayAccounts);
+  }
+  state.editingInstapayId = null;
   render();
 }
 
-/* ---------------- Sheet dispatcher ---------------- */
+/* ===============================================================
+   Sheet dispatcher
+   =============================================================== */
 function closeSheet() { state.sheet = null; state.txForm = null; render(); }
 
 function renderSheet() {
   let title, body, footer;
   if (state.sheet === "start") {
-    title = "الأرصدة الافتتاحية";
-    body = renderStartSheet();
+    title = "الأرصدة الافتتاحية"; body = renderStartSheet();
     footer = `<button class="primary-btn" onclick="submitStartDay()">بدء اليوم</button>`;
   } else if (state.sheet === "tx") {
     const editing = !!state.txForm.id;
-    title = editing ? "تعديل المعاملة" : "معاملة جديدة";
-    body = renderTxSheetBody();
+    title = editing ? "تعديل المعاملة" : "معاملة جديدة"; body = renderTxSheetBody();
     footer = `<button class="primary-btn" onclick="submitTx()">${editing ? "حفظ التعديل" : "إضافة المعاملة"}</button>`;
   } else if (state.sheet === "close") {
-    title = "إغلاق اليوم وجرد الدرج";
-    body = renderCloseSheetBody();
+    title = "إغلاق اليوم وجرد الدرج"; body = renderCloseSheetBody();
     footer = `<button class="primary-btn" onclick="submitCloseDay()">تأكيد الإغلاق</button>`;
   } else if (state.sheet === "addMachine") {
-    title = "إضافة مكينة شحن";
-    body = renderAddMachineSheetBody();
+    title = "إضافة مكينة شحن"; body = renderAddMachineSheetBody();
     footer = `<button class="primary-btn" id="am-submit-btn" onclick="submitAddMachine()" disabled>إضافة</button>`;
+  } else if (state.sheet === "addInstapay") {  // ✦ NEW
+    title = "إضافة حساب انستاباي"; body = renderAddInstapaySheetBody();
+    footer = `<button class="primary-btn" id="ai-submit-btn" onclick="submitAddInstapay()" disabled>إضافة</button>`;
   } else if (state.sheet === "editOpening") {
-    title = "تعديل الأرصدة الافتتاحية";
-    body = renderEditOpeningSheet();
+    title = "تعديل الأرصدة الافتتاحية"; body = renderEditOpeningSheet();
     footer = `<button class="primary-btn" onclick="submitEditOpening()">حفظ التعديل</button>`;
   } else if (state.sheet === "addUser") {
-    title = "إضافة مستخدم جديد";
-    body = renderAddUserSheetBody();
+    title = "إضافة مستخدم جديد"; body = renderAddUserSheetBody();
     const valid = state.newUserForm && (state.newUserForm.username||"").trim() && (state.newUserForm.password||"").length >= 6;
     footer = `<button class="primary-btn" id="au-submit-btn" onclick="submitAddUser()" ${valid ? "" : "disabled"}>${state.addUserBusy ? "جاري الإضافة..." : "إضافة المستخدم"}</button>`;
   }
@@ -2097,31 +2209,23 @@ function renderSheet() {
   `;
 }
 
-// Re-render only the sheet body (used for tx category/subtype/wallet toggles) to avoid full page flicker
 function refreshSheetOnly() {
   const bodyEl = document.getElementById("sheet-body");
-  if (bodyEl) {
-    bodyEl.innerHTML = renderTxSheetBody();
-    refreshIcons();
-  }
+  if (bodyEl) { bodyEl.innerHTML = renderTxSheetBody(); refreshIcons(); }
 }
 
-/* ---------------- Archive ---------------- */
+/* ===============================================================
+   Archive
+   =============================================================== */
 function renderArchiveView() {
-  if (state.archiveLoading) {
-    return `<div class="archive-title">الأرشيف</div><div class="archive-empty">جاري التحميل...</div>`;
-  }
-  if (state.archiveError) {
-    return `
-      <div class="archive-title">الأرشيف</div>
-      <div class="warn-box" style="margin-bottom:12px;">${esc(state.archiveError)}</div>
-      <button class="primary-btn" style="width:auto; padding:11px 22px;" onclick="setTab('archive')">إعادة المحاولة</button>
-    `;
-  }
+  if (state.archiveLoading) return `<div class="archive-title">الأرشيف</div><div class="archive-empty">جاري التحميل...</div>`;
+  if (state.archiveError) return `
+    <div class="archive-title">الأرشيف</div>
+    <div class="warn-box" style="margin-bottom:12px;">${esc(state.archiveError)}</div>
+    <button class="primary-btn" style="width:auto; padding:11px 22px;" onclick="setTab('archive')">إعادة المحاولة</button>
+  `;
   const past = state.archiveIndex.filter(d => d !== state.today);
-  if (past.length === 0) {
-    return `<div class="archive-title">الأرشيف</div><div class="archive-empty">مفيش أيام سابقة لسه</div>`;
-  }
+  if (past.length === 0) return `<div class="archive-title">الأرشيف</div><div class="archive-empty">مفيش أيام سابقة لسه</div>`;
   return `
     <div class="archive-title">الأرشيف</div>
     <div class="archive-list">
@@ -2136,35 +2240,23 @@ function renderArchiveView() {
 }
 
 function openArchiveDay(d) {
-  state.viewDate = d;
-  state.archiveDayData = null;
-  state.archiveDetailError = null;
-  render();
-  fetchArchiveDay(d).then(data => {
-    state.archiveDayData = data || emptyDay();
-    render();
-  }).catch(err => {
-    console.error("fetchArchiveDay failed", err);
-    state.archiveDetailError = `تعذر تحميل بيانات اليوم: ${err.code || ""} ${err.message || err}`;
-    render();
-  });
+  state.viewDate = d; state.archiveDayData = null; state.archiveDetailError = null; render();
+  fetchArchiveDay(d).then(data => { state.archiveDayData = data || emptyDay(); render(); })
+    .catch(err => { state.archiveDetailError = `تعذر تحميل بيانات اليوم: ${err.code || ""} ${err.message || err}`; render(); });
 }
 
 function renderArchiveDetail() {
   const d = state.archiveDayData;
-  if (state.archiveDetailError) {
-    return `
-      <button class="archive-back-btn" onclick="backToArchiveList()">${icon("chevron-right",{size:16})} رجوع للأرشيف</button>
-      <div class="warn-box">${esc(state.archiveDetailError)}</div>
-    `;
-  }
+  if (state.archiveDetailError) return `
+    <button class="archive-back-btn" onclick="backToArchiveList()">${icon("chevron-right",{size:16})} رجوع للأرشيف</button>
+    <div class="warn-box">${esc(state.archiveDetailError)}</div>
+  `;
   if (!d) return `<div style="text-align:center;padding:40px;color:var(--ink-40);">جاري التحميل...</div>`;
   const live = computeLive(d);
   const profitTotal = (d.transactions||[]).reduce((a,t)=>a+num(t.profit),0);
   const txHtml = d.transactions.length === 0
     ? `<div class="tx-list-empty">لا توجد معاملات</div>`
-    : [...d.transactions].reverse().map(t => renderArchiveTxRow(t)).join("");
-
+    : [...d.transactions].reverse().map(t => renderTxRow(t, false)).join("");
   return `
     <button class="archive-back-btn" onclick="backToArchiveList()">${icon("chevron-right",{size:16})} رجوع للأرشيف</button>
     <div class="archive-detail-title">${displayDate(state.viewDate)}</div>
@@ -2180,16 +2272,16 @@ function renderArchiveDetail() {
     <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
   `;
 }
-function renderArchiveTxRow(tx) {
-  // Same visual as renderTxRow but without edit/delete actions
-  return renderTxRow(tx, false);
-}
 function backToArchiveList() { state.viewDate = null; state.archiveDayData = null; render(); }
 
-/* ---------------- Services ---------------- */
+/* ===============================================================
+   Services view  ✦ مُحدَّث
+   =============================================================== */
 function renderServicesView() {
   const editable = canEdit();
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   let html = `
+    <!-- بروفايل المستخدم -->
     <div class="services-list" style="margin-bottom:20px;">
       <div class="services-row">
         ${icon("user",{size:16,color:"var(--ink-60)"})}
@@ -2200,6 +2292,7 @@ function renderServicesView() {
       </div>
     </div>
 
+    <!-- إدارة اليوم -->
     <div class="archive-title">إدارة اليوم</div>
     <div class="services-list" style="margin-bottom:20px;">
       ${editable ? `
@@ -2226,6 +2319,28 @@ function renderServicesView() {
       </div>
     </div>
 
+    <!-- ✦ حسابات انستاباي -->
+    <div class="services-header-row">
+      <div class="archive-title" style="margin-bottom:0;">حسابات انستاباي</div>
+      ${editable ? `<button class="add-btn" onclick="openAddInstapaySheet()">${icon("plus",{size:15})} إضافة</button>` : ""}
+    </div>
+    <div class="services-list" style="margin-bottom:20px;">
+      ${ipAccounts.length === 0 ? `<div class="services-empty">لسه مفيش حسابات</div>` : ipAccounts.map(acc => `
+        <div class="services-row">
+          ${icon("smartphone",{size:16,color:"var(--ink-60)"})}
+          ${state.editingInstapayId === acc.id ? `
+            <input class="services-row-input" id="instapay-edit-input" value="${esc(acc.name)}"
+              autofocus onblur="saveInstapayName('${acc.id}')" onkeydown="if(event.key==='Enter'){this.blur();}">
+          ` : `<div class="services-row-name">${esc(acc.name)}</div>`}
+          ${editable && state.editingInstapayId !== acc.id ? `
+            <button class="icon-btn" onclick="startEditInstapay('${acc.id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>
+            ${ipAccounts.length > 1 ? `<button class="icon-btn" onclick="confirmDeleteInstapay('${acc.id}', '${esc(acc.name).replace(/'/g,"\\'")}')">${icon("trash-2",{size:14,color:"var(--rust)"})}</button>` : ""}
+          ` : ""}
+        </div>
+      `).join("")}
+    </div>
+
+    <!-- المحافظ الإلكترونية -->
     <div class="archive-title">المحافظ الإلكترونية</div>
     <div class="services-list">
       ${WALLET_IDS.map(id => `
@@ -2242,6 +2357,7 @@ function renderServicesView() {
       `).join("")}
     </div>
 
+    <!-- حدود الإيداع (الليميت) -->
     <div class="archive-title">حدود الإيداع (الليميت) للمحافظ</div>
     <div class="services-list" style="margin-bottom:20px;">
       ${WALLET_IDS.map(id => {
@@ -2273,6 +2389,37 @@ function renderServicesView() {
       }).join("")}
     </div>
 
+    <!-- ✦ NEW: عمولة المحافظ -->
+    <div class="archive-title">عمولة المحافظ الافتراضية</div>
+    <div class="info-box">العمولة دي بتتضاف تلقائيًا في خانة "عمولة المحفظة" لما تختار المحفظة في المعاملة، وبتتخصم من رصيد المحفظة في السحب والإيداع.</div>
+    <div class="services-list" style="margin-bottom:20px;">
+      ${WALLET_IDS.map(id => {
+        const comm = num(state.walletCommissions?.[id]);
+        const editing = state.editingWalletCommissionId === id;
+        return `
+        <div class="services-row" style="align-items:center; flex-wrap:wrap; row-gap:8px;">
+          ${icon("wallet",{size:16,color:"var(--ink-60)"})}
+          <div style="flex:1; min-width:130px;">
+            <div class="services-row-name">${esc(state.walletNames[id])}</div>
+            <div style="font-size:11.5px; color:var(--gold); margin-top:2px; font-weight:600;">
+              عمولة افتراضية: <span class="num">${money(comm)}</span> ج.م
+            </div>
+          </div>
+          ${editing ? `
+            <input type="number" inputmode="decimal" class="services-row-input" style="width:110px;"
+              placeholder="0" id="wc-input-${id}" value="${comm || ''}" autofocus
+              onkeydown="if(event.key==='Enter'){saveWalletCommission('${id}');}">
+            <button class="chip-btn small" style="flex:none; background:var(--ink); color:var(--paper); border-color:var(--ink);" onclick="saveWalletCommission('${id}')">حفظ</button>
+          ` : `
+            <div class="num" style="font-weight:700; font-size:13.5px; color:var(--gold);">${money(comm)}</div>
+            ${editable ? `<button class="icon-btn" onclick="startEditWalletCommission('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>` : ""}
+          `}
+        </div>
+      `;
+      }).join("")}
+    </div>
+
+    <!-- مكن الشحن -->
     <div class="services-header-row">
       <div class="archive-title" style="margin-bottom:0;">مكن الشحن</div>
       ${editable ? `<button class="add-btn" onclick="openAddMachineSheet()">${icon("plus",{size:15})} إضافة</button>` : ""}
@@ -2302,9 +2449,7 @@ function renderUsersSection() {
               ${icon("user",{size:16,color: u.disabled ? "var(--ink-40)" : "var(--ink-60)"})}
               <div style="flex:1; min-width:130px;">
                 <div class="services-row-name" style="${u.disabled?'color:var(--ink-40);text-decoration:line-through;':''}">${esc(u.username)}</div>
-                <div style="font-size:11.5px; color:var(--ink-60); margin-top:3px;">
-                  ${esc(roleLabel(u.role))}${u.disabled ? " · معطّل" : ""}
-                </div>
+                <div style="font-size:11.5px; color:var(--ink-60); margin-top:3px;">${esc(roleLabel(u.role))}${u.disabled ? " · معطّل" : ""}</div>
               </div>
               ${u.role !== "admin" ? `
                 <div style="display:flex; align-items:center; gap:6px;">
@@ -2323,17 +2468,14 @@ function renderUsersSection() {
   `;
 }
 
+/* ---- wallet name/limit/commission edit helpers ---- */
 function startEditWallet(id) { if (!requireEdit()) return; state.editingWalletId = id; render(); }
 function saveWalletName(id) {
   if (!requireEdit()) { state.editingWalletId = null; render(); return; }
   const el = document.getElementById("wallet-edit-input");
   const name = el ? el.value.trim() : "";
-  if (name) {
-    state.walletNames = { ...state.walletNames, [id]: name };
-    saveWalletNames(state.walletNames);
-  }
-  state.editingWalletId = null;
-  render();
+  if (name) { state.walletNames = { ...state.walletNames, [id]: name }; saveWalletNames(state.walletNames); }
+  state.editingWalletId = null; render();
 }
 function startEditWalletLimit(id) { if (!requireEdit()) return; state.editingWalletLimitId = id; render(); }
 function saveWalletLimitUsed(id) {
@@ -2342,32 +2484,41 @@ function saveWalletLimitUsed(id) {
   const used = el ? num(el.value) : num(state.walletLimits[id]);
   state.walletLimits = { ...state.walletLimits, [id]: used };
   saveWalletLimits(state.walletLimits);
-  state.editingWalletLimitId = null;
-  render();
+  state.editingWalletLimitId = null; render();
+}
+/* ✦ NEW: عمولة المحفظة */
+function startEditWalletCommission(id) { if (!requireEdit()) return; state.editingWalletCommissionId = id; render(); }
+function saveWalletCommission(id) {
+  if (!requireEdit()) { state.editingWalletCommissionId = null; render(); return; }
+  const el = document.getElementById("wc-input-" + id);
+  const comm = el ? num(el.value) : num(state.walletCommissions?.[id]);
+  state.walletCommissions = { ...state.walletCommissions, [id]: comm };
+  saveWalletCommissions(state.walletCommissions);
+  state.editingWalletCommissionId = null; render();
 }
 function confirmDeleteMachine(id, name) {
   if (!requireEdit()) return;
-  if (confirm(`حذف "${name}"؟`)) {
-    state.machines = state.machines.filter(m => m.id !== id);
-    saveMachines(state.machines);
-    render();
-  }
+  if (confirm(`حذف "${name}"؟`)) { state.machines = state.machines.filter(m => m.id !== id); saveMachines(state.machines); render(); }
 }
 
-/* ---------------- disable all zoom: pinch, double-tap, ctrl+wheel ---------------- */
-document.addEventListener('gesturestart', function (e) { e.preventDefault(); }, { passive: false });
-document.addEventListener('gesturechange', function (e) { e.preventDefault(); }, { passive: false });
-document.addEventListener('gestureend', function (e) { e.preventDefault(); }, { passive: false });
-document.addEventListener('touchmove', function (e) { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+/* ===============================================================
+   Anti-zoom
+   =============================================================== */
+document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturechange', e => e.preventDefault(), { passive: false });
+document.addEventListener('gestureend', e => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 let __lastTouchEnd = 0;
-document.addEventListener('touchend', function (e) {
+document.addEventListener('touchend', e => {
   const now = Date.now();
   if (now - __lastTouchEnd <= 300) e.preventDefault();
   __lastTouchEnd = now;
 }, { passive: false });
-document.addEventListener('wheel', function (e) { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+document.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 
-/* ---------------- boot ---------------- */
+/* ===============================================================
+   Boot
+   =============================================================== */
 bootApp();
 </script>
 </body>
