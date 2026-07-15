@@ -53,6 +53,22 @@
     min-height: 100vh; min-height: 100svh; position: relative;
     overflow-x: hidden;
   }
+  /* ✦ Responsive: وسّع الحاوية تدريجيًا على الشاشات الأكبر (تابلت / لابتوب / ديسكتوب) */
+  @media (min-width: 640px) {
+    #shell { max-width: 620px; box-shadow: 0 0 60px rgba(0,0,0,0.35); }
+    .tab-bar, .action-bar-inner { max-width: 620px; }
+  }
+  @media (min-width: 900px) {
+    #shell { max-width: 760px; }
+    .tab-bar, .action-bar-inner { max-width: 760px; }
+    .balance-row2 { grid-template-columns: repeat(4, 1fr); }
+    .fawry-card-subs { grid-template-columns: repeat(3, 1fr); }
+    .content { padding-left: 22px; padding-right: 22px; }
+  }
+  @media (min-width: 1280px) {
+    #shell { max-width: 920px; }
+    .tab-bar, .action-bar-inner { max-width: 920px; }
+  }
 
   /* Header */
   .app-header {
@@ -393,6 +409,17 @@ function persistDay(key, data) {
   db.collection("days").doc(key).set(data)
     .catch(err => reportSaveError("فشل حفظ بيانات اليوم! البيانات دي متسجلتش على السيرفر: " + (err.message || err.code)));
 }
+/* ✦ NEW: يوم الشغل الحالي — عشان لو الساعة عدت ١٢ بليل، اليوم يفضل مفتوح لحد ما تقفله بنفسك */
+function saveCurrentDayKey(key) {
+  if (!db) return;
+  db.collection("meta").doc("currentDay").set({ key })
+    .catch(err => console.error("saveCurrentDayKey failed", err));
+}
+function fetchCurrentDayKey() {
+  if (!db) return Promise.resolve(null);
+  return db.collection("meta").doc("currentDay").get()
+    .then(snap => snap.exists ? (snap.data().key || null) : null);
+}
 function fetchArchiveList() {
   if (!db) return Promise.resolve([]);
   return db.collection("days")
@@ -625,6 +652,9 @@ const state = {
   newUserForm: null,
   addUserError: null,
   addUserBusy: false,
+  /* ✦ NEW: وضع تعديل يوم من الأرشيف */
+  editingArchiveDay: false,
+  liveDayBackup: null, // { key, data } — نسخة من اليوم الحالي وقت الدخول لوضع تعديل الأرشيف
 };
 
 try {
@@ -658,7 +688,27 @@ function attachRealtimeListeners() {
   attachWalletLimitsListener(0);
   attachInstapayAccountsListener(0);   // ✦ NEW
   attachWalletCommissionsListener(0);  // ✦ NEW
-  attachDayListener(0);
+  resolveWorkingDayAndAttach(0);
+}
+
+/* ✦ NEW: يحدد يوم الشغل الصح (ممكن يكون يوم سابق لسه مفتوح لو الساعة عدت ١٢ بليل) قبل ما يربط الـ listener */
+function resolveWorkingDayAndAttach(retryCount) {
+  fetchCurrentDayKey().then(key => {
+    if (key) {
+      state.today = key;
+    } else {
+      // أول مرة يفتح فيها التطبيق — سجّل يوم النهاردة كيوم الشغل الحالي
+      saveCurrentDayKey(state.today);
+    }
+    attachDayListener(0);
+  }).catch(err => {
+    console.error("resolveWorkingDayAndAttach failed (retry " + retryCount + ")", err);
+    if (retryCount < LISTENER_RETRY_DELAYS.length) {
+      scheduleRetry(retryCount, () => resolveWorkingDayAndAttach(retryCount + 1));
+    } else {
+      attachDayListener(0); // كملّ بيوم النهاردة كحل احتياطي بدل ما يعلّق التطبيق
+    }
+  });
 }
 
 function scheduleRetry(retryCount, fn) {
@@ -764,6 +814,7 @@ function attachWalletCommissionsListener(retryCount) {
 
 function attachDayListener(retryCount) {
   const unsub = db.collection("days").doc(state.today).onSnapshot(snap => {
+    if (state.editingArchiveDay) return; // ✦ NEW: منع الكتابة فوق بيانات الأرشيف وقت التعديل
     state.dayData = snap.exists ? snap.data() : emptyDay();
     state.dayReady = true;
     state.connectionError = null;
@@ -1143,15 +1194,15 @@ function renderHeader(profit) {
       <div class="app-header-row">
         <div class="app-header-logo">${icon("store", {size:19, color:"var(--ink)"})}</div>
         <div>
-          <div class="app-header-title">دفتر المحل</div>
-          <div class="app-header-date">${displayDate(dateKey(new Date()))}</div>
+          <div class="app-header-title">دفتر المحل${state.editingArchiveDay ? " · تعديل أرشيف" : ""}</div>
+          <div class="app-header-date">${displayDate(state.today)}</div>
         </div>
         ${profit !== null ? `
           <div class="app-header-profit">
             <div class="app-header-profit-label">مكسب اليوم</div>
             <div class="app-header-profit-value num">${money(profit)} <span style="font-size:11px;font-weight:400;">ج.م</span></div>
           </div>
-          ${canEdit() ? `
+          ${(canEdit() && !state.editingArchiveDay) ? `
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:rgba(242,236,218,0.12); border-radius:10px;">
             ${icon("rotate-ccw", {size:17, color:"var(--paper)"})}
           </button>` : ""}` : ""}
@@ -1182,6 +1233,7 @@ function renderTabBar() {
 }
 
 function setTab(t) {
+  if (state.editingArchiveDay && t !== "archive") { exitArchiveEditMode(); }
   state.tab = t;
   state.viewDate = null;
   if (t === "archive") {
@@ -1410,11 +1462,11 @@ function renderTodayView(live) {
       <div class="tx-list-count">${d.transactions.length} معاملة</div>
     </div>
     <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
-    ${(!closed && canEdit()) ? `
+    ${((!closed || state.editingArchiveDay) && canEdit()) ? `
       <div class="action-bar">
         <div class="action-bar-inner">
           <button class="action-bar-add" onclick="openTxSheet(null)">${icon("plus",{size:17})} معاملة جديدة</button>
-          <button class="action-bar-close" onclick="openCloseSheet()">إغلاق اليوم</button>
+          <button class="action-bar-close" onclick="openCloseSheet()">${closed ? "تحديث الإغلاق" : "إغلاق اليوم"}</button>
         </div>
       </div>
     ` : ""}
@@ -1609,6 +1661,16 @@ function confirmStartNewDay() {
     if (db && (state.dayData.transactions || []).length > 0) {
       db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
         .catch(err => console.error("backup before reset failed", err));
+    }
+    // ✦ لو اليوم كان مقفول، ابدأ يوم جديد بتاريخ النهاردة الحقيقي (ميفضلش عالق على تاريخ قديم)
+    if (state.dayData.status === "closed") {
+      const freshKey = dateKey(new Date());
+      if (freshKey !== state.today) {
+        state.today = freshKey;
+        saveCurrentDayKey(freshKey);
+        state.dayReady = false;
+        attachDayListener(0);
+      }
     }
     state.dayData = emptyDay();
     persistDay(state.today, state.dayData);
@@ -1896,17 +1958,52 @@ function updateFawrySettlementPreview() {
   if (out) out.innerHTML = fawrySettlementPreviewText(f);
   const linkWrap = document.getElementById("fawry-debt-link-wrap");
   if (linkWrap) linkWrap.innerHTML = fawryDebtLinkHtml(f);
+  // ✦ تحديث لحظي لكل خانة على حدة
+  const live = computeLive(state.dayData);
+  const curMadfoat = machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات");
+  const curVisa = machineBalValue(live.machines?.[f.debtMachineId], "فيزا");
+  liveBalanceHint("fs-madfoat", "fs-madfoat-hint", curMadfoat + num(f.fawryTopUpMadfoat), 1, "رصيد المدفوعات هيبقى");
+  liveBalanceHint("fs-visa", "fs-visa-hint", curVisa, -1, "متبقي في الفيزا");
+  liveBalanceHint("fs-topup", "fs-topup-hint", curMadfoat + num(f.fawryPaidFromMadfoat), 1, "رصيد المدفوعات هيبقى");
 }
 
-/* ✦ NEW: تحديث لحظي للمتبقي من مديونية المكينة عند سداد المديونية */
-function updateDebtPaymentRemaining(curDebt) {
-  const el = document.getElementById("tx-amount");
-  const out = document.getElementById("debt-payment-remaining");
+/* ✦ NEW: تحديث لحظي عام للمتبقي/الناتج تحت أي خانة رقم بتأثر على رصيد معين
+   base: الرصيد الحالي قبل التعديل
+   sign: +1 لو الخانة بتزود الرصيد، -1 لو بتقلله
+   label: النص قبل الرقم (افتراضيًا "الناتج") */
+function liveBalanceHint(inputId, outId, base, sign, label) {
+  const el = document.getElementById(inputId);
+  const out = document.getElementById(outId);
   if (!el || !out) return;
   const val = el.value;
   if (val === "") { out.innerHTML = ""; return; }
-  const remaining = curDebt - num(val);
-  out.innerHTML = `متبقي: <span class="num" style="font-weight:700;">${money(remaining)}</span> ج.م`;
+  const result = base + sign * num(val);
+  out.innerHTML = `${label || "الناتج"}: <span class="num" style="font-weight:700;">${money(result)}</span> ج.م`;
+}
+
+/* ✦ سداد مديونية مكينة: المتبقي = المديونية الحالية - المبلغ المدفوع */
+function updateDebtPaymentRemaining(curDebt) {
+  liveBalanceHint("tx-amount", "debt-payment-remaining", curDebt, -1, "متبقي");
+}
+
+/* ✦ NEW: نسخة عامة تُستخدم مباشرة من oninput مع تمرير base/sign/label */
+function updateGenericHint(inputId, outId, base, sign, label) {
+  liveBalanceHint(inputId, outId, base, sign, label);
+}
+
+/* ✦ فودافون كاش: تحديث رصيد المحفظة اللحظي (بيراعي المبلغ والعمولة سوا) */
+function updateWalletHint(curWallet) {
+  const f = state.txForm;
+  const amtEl = document.getElementById("tx-amount");
+  const commEl = document.getElementById("tx-commission");
+  const out = document.getElementById("tx-wallet-hint");
+  if (!out) return;
+  const amtVal = amtEl ? amtEl.value : "";
+  const commVal = commEl ? commEl.value : "";
+  if (amtVal === "" && commVal === "") { out.innerHTML = ""; return; }
+  const isDeposit = f.subtype === "إيداع";
+  const result = isDeposit ? (curWallet - num(amtVal) - num(commVal)) : (curWallet + num(amtVal));
+  out.innerHTML = `رصيد ${esc(state.walletNames[f.walletId])} هيبقى: <span class="num" style="font-weight:700;">${money(result)}</span> ج.م`;
 }
 
 function syncTxFormFromInputs() {
@@ -2102,15 +2199,18 @@ function renderTxSheetBody() {
         <div class="field">
           <div class="field-label">المبلغ المسدد (المأخوذ) من المدفوعات</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-madfoat" value="${esc(f.fawryPaidFromMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
+          <div id="fs-madfoat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryPaidFromMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(curMadfoat + num(f.fawryTopUpMadfoat) + num(f.fawryPaidFromMadfoat))}</span> ج.م` : ""}</div>
           <div id="fawry-debt-link-wrap">${fawryDebtLinkHtml(f)}</div>
         </div>
         <div class="field">
           <div class="field-label">المبلغ المدفوع من الفيزا</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-visa" value="${esc(f.fawryPaidFromVisa ?? '')}" oninput="updateFawrySettlementPreview()">
+          <div id="fs-visa-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryPaidFromVisa ? `متبقي في الفيزا: <span class="num" style="font-weight:700;">${money(curVisa - num(f.fawryPaidFromVisa))}</span> ج.م` : ""}</div>
         </div>
         <div class="field">
           <div class="field-label">مبلغ إضافي يُضاف للمدفوعات (لو موجود)</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-topup" value="${esc(f.fawryTopUpMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
+          <div id="fs-topup-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryTopUpMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(curMadfoat + num(f.fawryPaidFromMadfoat) + num(f.fawryTopUpMadfoat))}</span> ج.م` : ""}</div>
         </div>
         <div id="fawry-settlement-preview" class="info-box" style="color:var(--ink-60); background:var(--paper-2);">${fawrySettlementPreviewText(f)}</div>
       `;
@@ -2127,9 +2227,37 @@ function renderTxSheetBody() {
   if (f.category === "fawrySettlement") {
     /* لا حاجة لخانة مبلغ عامة — الخانات الثلاثة اتضافت فوق بالفعل */
   } else if (f.category === "expense" || f.category === "cash") {
-    html += `<div class="field"><div class="field-label">المبلغ (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
+    const live = computeLive(state.dayData);
+    const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    const sign = f.category === "expense" ? -1 : 1;
+    let curDrawer = live.drawer;
+    if (existingTx && existingTx.category === f.category) {
+      curDrawer -= sign * num(existingTx.amount); // رجّع تأثير المعاملة القديمة قبل المعاينة
+    }
+    html += `
+      <div class="field">
+        <div class="field-label">المبلغ (ج.م)</div>
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curDrawer},${sign},'الدرج (كاش) هيبقى')">
+        <div id="tx-amount-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `الدرج (كاش) هيبقى: <span class="num" style="font-weight:700;">${money(curDrawer + sign*num(f.amount))}</span> ج.م` : ""}</div>
+      </div>
+    `;
   } else if (f.category === "machineDebt") {
-    html += `<div class="field"><div class="field-label">مبلغ المديونية (ج.م)</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}"></div>`;
+    const live = computeLive(state.dayData);
+    const debtSelMachine = state.machines.find(m => m.id === f.debtMachineId);
+    const debtSubs = machineSubs(debtSelMachine);
+    const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    let curBal = debtSubs ? machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات") : machineBalValue(live.machines?.[f.debtMachineId]);
+    if (existingTx && existingTx.category === "machineDebt" && existingTx.machineId === f.debtMachineId) {
+      curBal -= num(existingTx.amount); // رجّع تأثير المعاملة القديمة قبل المعاينة
+    }
+    const balLabel = debtSubs ? "رصيد المدفوعات هيبقى" : "رصيد المكينة هيبقى";
+    html += `
+      <div class="field">
+        <div class="field-label">مبلغ المديونية (ج.م)</div>
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curBal},1,'${balLabel}')">
+        <div id="tx-amount-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `${balLabel}: <span class="num" style="font-weight:700;">${money(curBal + num(f.amount))}</span> ج.م` : ""}</div>
+      </div>
+    `;
   } else if (f.category === "machineDebtPayment") {
     const live = computeLive(state.dayData);
     const existingPayment = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
@@ -2147,12 +2275,20 @@ function renderTxSheetBody() {
     const isDeposit = f.subtype === "إيداع";
     const defaultComm = num(state.walletCommissions?.[f.walletId] || 0);
     const commVal = f.commission !== "" ? f.commission : (defaultComm > 0 ? defaultComm : "");
+    const live = computeLive(state.dayData);
+    const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    let curWallet = num(live.wallets?.[f.walletId]);
+    if (existingTx && existingTx.category === "vodafone" && existingTx.walletId === f.walletId) {
+      // رجّع تأثير المعاملة القديمة قبل المعاينة
+      if (existingTx.subtype === "سحب") curWallet -= (num(existingTx.amount) - num(existingTx.commission));
+      else curWallet += (num(existingTx.amount) + num(existingTx.commission));
+    }
     if (isDeposit) {
       html += `
         <div class="field-3col" style="margin-bottom:14px;">
           <div class="field" style="margin-bottom:0;">
             <div class="field-label">المبلغ (ج.م)</div>
-            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateWalletHint(${curWallet})">
           </div>
           <div class="field" style="margin-bottom:0;">
             <div class="field-label">المكسب</div>
@@ -2160,25 +2296,97 @@ function renderTxSheetBody() {
           </div>
           <div class="field" style="margin-bottom:0;">
             <div class="field-label">عمولة المحفظة</div>
-            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(commVal)}">
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(commVal)}" oninput="updateWalletHint(${curWallet})">
           </div>
         </div>
         ${defaultComm > 0 ? `<div class="info-box" style="margin-top:-8px;">العمولة الافتراضية لهذه المحفظة: <span class="num" style="font-weight:700;">${money(defaultComm)}</span> ج.م</div>` : ""}
+        <div id="tx-wallet-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${(f.amount !== "" || commVal !== "") ? `رصيد ${esc(state.walletNames[f.walletId])} هيبقى: <span class="num" style="font-weight:700;">${money(curWallet - num(f.amount) - num(commVal))}</span> ج.م` : ""}</div>
       `;
     } else {
       html += `
         <div class="field-row">
           <div class="field">
             <div class="field-label">المبلغ (ج.م)</div>
-            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}">
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateWalletHint(${curWallet})">
           </div>
           <div class="field">
             <div class="field-label">المكسب</div>
             <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
           </div>
         </div>
+        <div id="tx-wallet-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `رصيد ${esc(state.walletNames[f.walletId])} هيبقى: <span class="num" style="font-weight:700;">${money(curWallet + num(f.amount))}</span> ج.م` : ""}</div>
       `;
     }
+  } else if (f.category === "instapay") {
+    const ipAccountId = f.instapayAccountId || (state.instapayAccounts||[])[0]?.id;
+    const live = computeLive(state.dayData);
+    const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    let curIp = num(live.instapayAccounts?.[ipAccountId]);
+    if (existingTx && existingTx.category === "instapay" && (existingTx.instapayAccountId || (state.instapayAccounts||[])[0]?.id) === ipAccountId) {
+      curIp -= (existingTx.subtype === "سحب" ? num(existingTx.amount) : -num(existingTx.amount)); // رجّع تأثير المعاملة القديمة
+    }
+    const sign = f.subtype === "سحب" ? 1 : -1;
+    const accName = getInstapayAccountName(ipAccountId);
+    html += `
+      <div class="field-row">
+        <div class="field">
+          <div class="field-label">المبلغ (ج.م)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curIp},${sign},'رصيد ${esc(accName).replace(/'/g,"\\'")} هيبقى')">
+        </div>
+        <div class="field">
+          <div class="field-label">المكسب / النسبة</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+        </div>
+      </div>
+      <div id="tx-amount-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `رصيد ${esc(accName)} هيبقى: <span class="num" style="font-weight:700;">${money(curIp + sign*num(f.amount))}</span> ج.م` : ""}</div>
+    `;
+  } else if (f.category === "islam") {
+    const live = computeLive(state.dayData);
+    const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    let curIslam = live.islamBalance;
+    if (existingTx && existingTx.category === "islam") {
+      curIslam -= (existingTx.subtype === "سحب" ? num(existingTx.amount) : -num(existingTx.amount)); // رجّع تأثير المعاملة القديمة
+    }
+    const sign = f.subtype === "سحب" ? 1 : -1;
+    html += `
+      <div class="field-row">
+        <div class="field">
+          <div class="field-label">المبلغ (ج.م)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curIslam},${sign},'حساب إسلام هيبقى')">
+        </div>
+        <div class="field">
+          <div class="field-label">المكسب / النسبة</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+        </div>
+      </div>
+      <div id="tx-amount-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `حساب إسلام هيبقى: <span class="num" style="font-weight:700;">${money(curIslam + sign*num(f.amount))}</span> ج.م` : ""}</div>
+    `;
+  } else if (f.category === "machine") {
+    const selMachine2 = state.machines.find(m => m.id === f.machineId);
+    const subs2 = machineSubs(selMachine2);
+    const live = computeLive(state.dayData);
+    const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+    let curMachineBal = subs2 ? machineBalValue(live.machines?.[f.machineId], f.machineSub) : machineBalValue(live.machines?.[f.machineId]);
+    if (existingTx && existingTx.category === "machine" && existingTx.machineId === f.machineId && (existingTx.machineSub || null) === (f.machineSub || null)) {
+      // رجّع تأثير المعاملة القديمة قبل المعاينة
+      if (f.machineSub === "فيزا") curMachineBal -= num(existingTx.amount);
+      else curMachineBal += num(existingTx.amount);
+    }
+    const sign = f.machineSub === "فيزا" ? 1 : -1;
+    const balLabel = subs2 ? `رصيد ${f.machineSub || "المكينة"} هيبقى` : "رصيد المكينة هيبقى";
+    html += `
+      <div class="field-row">
+        <div class="field">
+          <div class="field-label">المبلغ (ج.م)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curMachineBal},${sign},'${balLabel}')">
+        </div>
+        <div class="field">
+          <div class="field-label">المكسب / النسبة</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+        </div>
+      </div>
+      <div id="tx-amount-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `${balLabel}: <span class="num" style="font-weight:700;">${money(curMachineBal + sign*num(f.amount))}</span> ج.م` : ""}</div>
+    `;
   } else {
     html += `
       <div class="field-row">
@@ -2586,6 +2794,48 @@ function openArchiveDay(d) {
     .catch(err => { state.archiveDetailError = `تعذر تحميل بيانات اليوم: ${err.code || ""} ${err.message || err}`; render(); });
 }
 
+/* ✦ NEW: الدخول في وضع تعديل يوم من الأرشيف — بيستخدم نفس شاشات المعاملات/الافتتاحية/الإغلاق العادية */
+function enterArchiveEditMode() {
+  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يعدّل في أيام الأرشيف."); return; }
+  if (!state.archiveDayData) return;
+  if (!confirm(`هتدخل في وضع تعديل يوم ${displayDate(state.viewDate)}. أي تعديل هيتسجل فورًا على البيانات المحفوظة. متأكد؟`)) return;
+  state.liveDayBackup = { key: state.today, data: state.dayData };
+  state.editingArchiveDay = true;
+  state.today = state.viewDate;
+  state.dayData = state.archiveDayData;
+  render();
+}
+
+/* ✦ NEW: الخروج من وضع تعديل الأرشيف والرجوع لليوم الحالي الحقيقي */
+function exitArchiveEditMode() {
+  if (!state.editingArchiveDay) return;
+  fetchArchiveDay(state.viewDate).then(data => {
+    state.archiveDayData = data || emptyDay();
+    if (state.liveDayBackup) {
+      state.today = state.liveDayBackup.key;
+      state.dayData = state.liveDayBackup.data;
+    }
+    state.editingArchiveDay = false;
+    state.liveDayBackup = null;
+    render();
+    // ✦ خد آخر نسخة من اليوم الحالي الحقيقي من السيرفر (تحسبًا لأي تغيير حصل وقت التعديل)
+    if (db) {
+      db.collection("days").doc(state.today).get().then(snap => {
+        if (!state.editingArchiveDay) { state.dayData = snap.exists ? snap.data() : emptyDay(); render(); }
+      }).catch(err => console.error("refresh live day after archive edit failed", err));
+    }
+  }).catch(err => {
+    alert("تعذر تحديث بيانات الأرشيف بعد الخروج: " + (err.message || err));
+    if (state.liveDayBackup) {
+      state.today = state.liveDayBackup.key;
+      state.dayData = state.liveDayBackup.data;
+    }
+    state.editingArchiveDay = false;
+    state.liveDayBackup = null;
+    render();
+  });
+}
+
 function renderArchiveDetail() {
   const d = state.archiveDayData;
   if (state.archiveDetailError) return `
@@ -2593,6 +2843,19 @@ function renderArchiveDetail() {
     <div class="warn-box">${esc(state.archiveDetailError)}</div>
   `;
   if (!d) return `<div style="text-align:center;padding:40px;color:var(--ink-40);">جاري التحميل...</div>`;
+
+  /* ✦ لو في وضع تعديل الأرشيف، اعرض نفس شاشة "اليوم" العادية (بكل إمكانيات التعديل) لكن على بيانات اليوم القديم */
+  if (state.editingArchiveDay) {
+    const live = computeLive(state.dayData);
+    return `
+      <div class="warn-box" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px;">
+        <span>بتعدّل يوم ${esc(displayDate(state.viewDate))} من الأرشيف الآن.</span>
+        <button class="chip-btn small" style="flex:none; background:var(--ink); color:var(--paper); border-color:var(--ink);" onclick="exitArchiveEditMode()">تم / رجوع</button>
+      </div>
+      ${renderTodayView(live)}
+    `;
+  }
+
   const live = computeLive(d);
   const profitTotal = (d.transactions||[]).reduce((a,t)=>a+num(t.profit),0);
   const txHtml = d.transactions.length === 0
@@ -2603,17 +2866,25 @@ function renderArchiveDetail() {
     <div class="archive-detail-title">${displayDate(state.viewDate)}</div>
     <div class="archive-detail-sub">مكسب اليوم: <span class="num" style="font-weight:700;">${money(profitTotal)}</span> ج.م · ${d.transactions.length} معاملة</div>
     ${d.status === "closed" && d.closing ? renderClosedStamp(d.closing, live, d.closedBy) : ""}
-    ${d.status === "closed" ? `
-      <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:16px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.viewDate, state.archiveDayData)">
-        ${icon("download",{size:16})} تحميل PDF
-      </button>
-    ` : ""}
+    <div style="display:flex; gap:10px; margin-bottom:16px;">
+      ${d.status === "closed" ? `
+        <button id="pdf-download-btn" class="primary-btn" style="flex:1; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.viewDate, state.archiveDayData)">
+          ${icon("download",{size:16})} تحميل PDF
+        </button>
+      ` : ""}
+      ${isAdmin() ? `
+        <button class="action-bar-close" style="flex:1;" onclick="enterArchiveEditMode()">${icon("pencil",{size:15})} تعديل هذا اليوم</button>
+      ` : ""}
+    </div>
     ${renderBalancesGrid(live)}
     <div class="section-title">المعاملات</div>
     <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
   `;
 }
-function backToArchiveList() { state.viewDate = null; state.archiveDayData = null; render(); }
+function backToArchiveList() {
+  if (state.editingArchiveDay) { exitArchiveEditMode(); }
+  state.viewDate = null; state.archiveDayData = null; render();
+}
 
 /* ===============================================================
    Services view  ✦ مُحدَّث
