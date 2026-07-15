@@ -588,7 +588,10 @@ function computeLive(dayData){
       drawer += (-paidFromMadfoat + paidFromVisa - topUpMadfoat);
       const cur = machines[t.machineId];
       const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
-      obj["مدفوعات"] = (obj["مدفوعات"] || 0) + paidFromMadfoat + topUpMadfoat;
+      const madfoatBefore = obj["مدفوعات"] || 0;
+      // ✦ المسدد بيحرّك الرصيد ناحية الصفر (لو الرصيد سالب بيتزود، لو موجب بيتقل)، والزيادة الإضافية بتتضاف عادي
+      const madfoatAfterPayment = madfoatBefore < 0 ? (madfoatBefore + paidFromMadfoat) : (madfoatBefore - paidFromMadfoat);
+      obj["مدفوعات"] = madfoatAfterPayment + topUpMadfoat;
       obj["فيزا"] = (obj["فيزا"] || 0) - paidFromVisa;
       machines[t.machineId] = obj;
       // ✦ NEW: ربط المبلغ المسدد بسداد مديونية فوري (لو مفعّل)
@@ -655,6 +658,7 @@ const state = {
   /* ✦ NEW: وضع تعديل يوم من الأرشيف */
   editingArchiveDay: false,
   liveDayBackup: null, // { key, data } — نسخة من اليوم الحالي وقت الدخول لوضع تعديل الأرشيف
+  balanceBreakdownMachineId: null, // ✦ NEW: لعرض تفاصيل حساب رصيد فوري (تشخيص)
 };
 
 try {
@@ -1371,7 +1375,10 @@ function balanceCard(iconName, label, value, walletId) {
 function fawryCard(m, live) {
   return `
     <div class="fawry-card">
-      <div class="fawry-card-title">${icon("landmark",{size:14,color:"var(--ink-60)"})}${esc(m.name)}</div>
+      <div class="fawry-card-title" style="justify-content:space-between; display:flex; align-items:center;">
+        <span style="display:flex; align-items:center; gap:6px;">${icon("landmark",{size:14,color:"var(--ink-60)"})}${esc(m.name)}</span>
+        <button class="icon-btn" title="تفاصيل الحساب" onclick="toggleBalanceBreakdown('${m.id}')">${icon("chevron-down",{size:14,color:"var(--ink-40)"})}</button>
+      </div>
       <div class="fawry-card-subs">
         ${FAWRY_SUBS.map(s => {
           const val = machineBalValue(live.machines[m.id], s);
@@ -1384,6 +1391,46 @@ function fawryCard(m, live) {
           `;
         }).join("")}
       </div>
+      ${state.balanceBreakdownMachineId === m.id ? renderBalanceBreakdown(m) : ""}
+    </div>
+  `;
+}
+
+/* ✦ NEW: تفاصيل حساب رصيد مكينة فوري — لتتبع مصدر أي رقم غريب */
+function toggleBalanceBreakdown(machineId) {
+  state.balanceBreakdownMachineId = state.balanceBreakdownMachineId === machineId ? null : machineId;
+  render();
+}
+function renderBalanceBreakdown(m) {
+  const o = state.dayData.opening || emptyOpening();
+  const openingVal = machineBalValue(o.machines?.[m.id], "مدفوعات");
+  const rows = [];
+  rows.push({ label: "الرصيد الافتتاحي (مدفوعات)", amount: openingVal, running: openingVal });
+  let running = openingVal;
+  (state.dayData.transactions || []).forEach(t => {
+    if (t.machineId !== m.id) return;
+    let delta = 0, label = "";
+    if (t.category === "machine" && t.machineSub === "مدفوعات") { delta = -num(t.amount); label = `شحن مكن (مدفوعات) · ${t.time || ""}`; }
+    else if (t.category === "machineDebt") { delta = num(t.amount); label = `مديونية (المكن) · ${t.time || ""}`; }
+    else if (t.category === "fawrySettlement") {
+      const before = running;
+      const after = madfoatAfterSettlement(before, t.fawryPaidFromMadfoat || 0, t.fawryTopUpMadfoat || 0);
+      delta = after - before;
+      label = `تسوية فوري (مسدد ${money(num(t.fawryPaidFromMadfoat||0))} / زيادة ${money(num(t.fawryTopUpMadfoat||0))}) · ${t.time || ""}`;
+    } else { return; }
+    running += delta;
+    rows.push({ label, amount: delta, running });
+  });
+  return `
+    <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--ink-15); font-size:11.5px;">
+      <div style="font-weight:700; margin-bottom:6px; color:var(--ink-60);">تفاصيل رصيد "مدفوعات" (بالترتيب):</div>
+      ${rows.map(r => `
+        <div style="display:flex; justify-content:space-between; gap:8px; padding:3px 0; color:var(--ink-60);">
+          <span>${esc(r.label)}</span>
+          <span class="num" style="white-space:nowrap;">${r.amount >= 0 && r.label.includes("افتتاحي") ? "" : (r.amount >= 0 ? "+" : "")}${money(r.amount)} <span style="color:var(--ink-40);">→ ${money(r.running)}</span></span>
+        </div>
+      `).join("")}
+      ${rows.length === 1 ? `<div style="color:var(--ink-40); padding-top:4px;">مفيش أي معاملة أثرت على "مدفوعات" في اليوم ده — الرصيد الحالي جاي بالكامل من الرصيد الافتتاحي.</div>` : ""}
     </div>
   `;
 }
@@ -1654,29 +1701,32 @@ function openStartSheet() { if (!requireEdit()) return; state.sheet = "start"; r
 function confirmStartNewDay() {
   if (!requireEdit()) return;
   if (state.dayData.status === "not_started") { openStartSheet(); return; }
-  const msg = state.dayData.status === "closed"
-    ? "هيتم مسح بيانات اليوم الحالي (المقفول) وهتقدر تبدأ يوم جديد. متأكد؟"
-    : "اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي. متأكد؟";
-  if (confirm(msg)) {
-    if (db && (state.dayData.transactions || []).length > 0) {
-      db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
-        .catch(err => console.error("backup before reset failed", err));
-    }
-    // ✦ لو اليوم كان مقفول، ابدأ يوم جديد بتاريخ النهاردة الحقيقي (ميفضلش عالق على تاريخ قديم)
-    if (state.dayData.status === "closed") {
-      const freshKey = dateKey(new Date());
-      if (freshKey !== state.today) {
-        state.today = freshKey;
-        saveCurrentDayKey(freshKey);
-        state.dayReady = false;
-        attachDayListener(0);
-      }
-    }
+  if (state.dayData.status === "closed") {
+    // ✦ اليوم مقفول بالفعل — ابدأ يوم شغل جديد بتاريخ النهاردة الحقيقي، من غير أي مسح لبيانات اليوم المقفول
+    const closedKey = state.today;
+    const freshKey = dateKey(new Date());
+    const nextKey = freshKey !== closedKey ? freshKey : (closedKey + "-r" + Date.now()); // احتياطي نادر لو نفس التاريخ التقويمي
+    if (!confirm("هيتم بدء يوم شغل جديد. بيانات اليوم المقفول الحالي هتفضل محفوظة زي ما هي في الأرشيف. متأكد؟")) return;
+    state.today = nextKey;
+    saveCurrentDayKey(nextKey);
+    state.dayReady = false;
+    attachDayListener(0);
     state.dayData = emptyDay();
     persistDay(state.today, state.dayData);
     state.tab = "today"; state.sheet = null;
     openStartSheet();
+    return;
   }
+  // اليوم لسه مفتوح (مش مقفول) — ده تصحيح غلطة على نفس اليوم
+  if (!confirm("اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي. متأكد؟")) return;
+  if (db && (state.dayData.transactions || []).length > 0) {
+    db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
+      .catch(err => console.error("backup before reset failed", err));
+  }
+  state.dayData = emptyDay();
+  persistDay(state.today, state.dayData);
+  state.tab = "today"; state.sheet = null;
+  openStartSheet();
 }
 
 function renderStartSheet() {
@@ -1948,6 +1998,12 @@ function toggleFawryReduceDebt() {
   state.txForm.fawryReduceDebt = el ? el.checked : true;
 }
 
+/* ✦ NEW: حساب رصيد "مدفوعات" بعد السداد — بيتحرك ناحية الصفر بمقدار المسدد (ويكمل لو عدّى الصفر)، ثم تُضاف الزيادة */
+function madfoatAfterSettlement(before, paid, topUp) {
+  const afterPayment = before < 0 ? (before + num(paid)) : (before - num(paid));
+  return afterPayment + num(topUp);
+}
+
 function updateFawrySettlementPreview() {
   const f = state.txForm;
   const get = id => { const el = document.getElementById(id); return el ? el.value : ""; };
@@ -1962,9 +2018,17 @@ function updateFawrySettlementPreview() {
   const live = computeLive(state.dayData);
   const curMadfoat = machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات");
   const curVisa = machineBalValue(live.machines?.[f.debtMachineId], "فيزا");
-  liveBalanceHint("fs-madfoat", "fs-madfoat-hint", curMadfoat + num(f.fawryTopUpMadfoat), 1, "رصيد المدفوعات هيبقى");
+  const madfoatHintEl = document.getElementById("fs-madfoat-hint");
+  if (madfoatHintEl) {
+    madfoatHintEl.innerHTML = f.fawryPaidFromMadfoat !== ""
+      ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : "";
+  }
   liveBalanceHint("fs-visa", "fs-visa-hint", curVisa, -1, "متبقي في الفيزا");
-  liveBalanceHint("fs-topup", "fs-topup-hint", curMadfoat + num(f.fawryPaidFromMadfoat), 1, "رصيد المدفوعات هيبقى");
+  const topupHintEl = document.getElementById("fs-topup-hint");
+  if (topupHintEl) {
+    topupHintEl.innerHTML = f.fawryTopUpMadfoat !== ""
+      ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : "";
+  }
 }
 
 /* ✦ NEW: تحديث لحظي عام للمتبقي/الناتج تحت أي خانة رقم بتأثر على رصيد معين
@@ -2199,7 +2263,7 @@ function renderTxSheetBody() {
         <div class="field">
           <div class="field-label">المبلغ المسدد (المأخوذ) من المدفوعات</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-madfoat" value="${esc(f.fawryPaidFromMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
-          <div id="fs-madfoat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryPaidFromMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(curMadfoat + num(f.fawryTopUpMadfoat) + num(f.fawryPaidFromMadfoat))}</span> ج.م` : ""}</div>
+          <div id="fs-madfoat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryPaidFromMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : ""}</div>
           <div id="fawry-debt-link-wrap">${fawryDebtLinkHtml(f)}</div>
         </div>
         <div class="field">
@@ -2210,7 +2274,7 @@ function renderTxSheetBody() {
         <div class="field">
           <div class="field-label">مبلغ إضافي يُضاف للمدفوعات (لو موجود)</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-topup" value="${esc(f.fawryTopUpMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
-          <div id="fs-topup-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryTopUpMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(curMadfoat + num(f.fawryPaidFromMadfoat) + num(f.fawryTopUpMadfoat))}</span> ج.م` : ""}</div>
+          <div id="fs-topup-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryTopUpMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : ""}</div>
         </div>
         <div id="fawry-settlement-preview" class="info-box" style="color:var(--ink-60); background:var(--paper-2);">${fawrySettlementPreviewText(f)}</div>
       `;
@@ -2636,6 +2700,18 @@ function submitCloseDay() {
   state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow(), closedBy: state.userProfile?.username || "" };
   persistDay(state.today, state.dayData);
   state.sheet = null;
+  // ✦ NEW: بعد الإغلاق، انتقل تلقائيًا ليوم الشغل التالي (تاريخ النهاردة الفعلي) عشان تقدر تبدأ يوم جديد على طول
+  if (!state.editingArchiveDay) {
+    const closedKey = state.today;
+    const freshKey = dateKey(new Date());
+    const nextKey = freshKey !== closedKey ? freshKey : closedKey; // لو لسه نفس اليوم التقويمي، سيبه زي ما هو
+    if (nextKey !== closedKey) {
+      state.today = nextKey;
+      saveCurrentDayKey(nextKey);
+      state.dayReady = false;
+      attachDayListener(0);
+    }
+  }
   render();
 }
 
