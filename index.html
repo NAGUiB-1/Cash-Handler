@@ -4,12 +4,32 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>دفتر المحل</title>
+<meta name="theme-color" content="#17262b" id="theme-color-meta">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="دفتر المحل">
+<link rel="manifest" id="pwa-manifest-link">
+<script>
+  // ✦ يحدد الوضع الليلي/النهاري فورًا قبل أي رسم للصفحة، عشان مفيش ولا لمحة (flash) من اللون الغلط
+  (function () {
+    try {
+      var saved = localStorage.getItem("cashapp_theme");
+      var theme = (saved === "dark" || saved === "light") ? saved
+        : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+      var metaColor = document.getElementById("theme-color-meta");
+      if (metaColor) metaColor.setAttribute("content", theme === "dark" ? "#000000" : "#17262b");
+    } catch (e) {}
+  })();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-auth-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js" defer></script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Cpath d='M5 9l1.2-4h11.6L19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Cpath d='M5 9l1.2-4h11.6L19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Tajawal:wght@400;500;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
 
@@ -18,10 +38,21 @@
     --ink-15: rgba(23,38,43,0.15); --ink-20: rgba(23,38,43,0.20); --ink-40: rgba(23,38,43,0.45);
     --ink-60: rgba(23,38,43,0.65); --paper: #f2ecda; --paper-2: #e8dfc4;
     --emerald: #1f6f54; --steel: #35607a; --gold: #ad7a26; --rust: #a13a2a;
+    --surface: #ffffff; --surface-2: #f7f4ea;
+    --header-bg: #17262b; --header-fg: #f2ecda; --header-fg-dim: rgba(242,236,218,0.45);
     --safe-b: env(safe-area-inset-bottom, 0px);
     --tabbar-h: calc(65px + var(--safe-b));
     --actionbar-h: 54px;
     --actionbar-gap: 12px;
+  }
+  /* ✦ Dark mode: أسود AMOLED خالص - من غير أي لون بيج/كريمي خالص */
+  html[data-theme="dark"] {
+    --ink: #f0f0f0; --ink-08: rgba(240,240,240,0.08); --ink-10: rgba(240,240,240,0.12);
+    --ink-15: rgba(240,240,240,0.18); --ink-20: rgba(240,240,240,0.24); --ink-40: rgba(240,240,240,0.5);
+    --ink-60: rgba(240,240,240,0.72); --paper: #000000; --paper-2: #0d0d0d;
+    --emerald: #3ea884; --steel: #6ea3c4; --gold: #d6a24a; --rust: #e0685a;
+    --surface: #0a0a0a; --surface-2: #131313;
+    --header-bg: #000000; --header-fg: #f0f0f0; --header-fg-dim: rgba(240,240,240,0.45);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
@@ -34,7 +65,7 @@
     overscroll-behavior-y: contain;
   }
   body {
-    background: var(--ink);
+    background: var(--header-bg);
     display: flex;
     justify-content: center;
     font-family: 'Tajawal', sans-serif;
@@ -72,16 +103,16 @@
 
   /* Header */
   .app-header {
-    background: var(--ink); color: var(--paper);
+    background: var(--header-bg); color: var(--header-fg);
     padding: 22px 18px 20px; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;
   }
   .app-header-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; row-gap: 8px; }
   .app-header-logo {
-    width: 38px; height: 38px; border-radius: 10px; background: var(--paper);
+    width: 38px; height: 38px; border-radius: 10px; background: var(--header-fg);
     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
   .app-header-title { font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 18px; }
-  .app-header-date { font-size: 12.5px; color: var(--paper); opacity: 0.65; white-space: nowrap; }
+  .app-header-date { font-size: 12.5px; color: var(--header-fg); opacity: 0.65; white-space: nowrap; }
   .app-header-profit { margin-inline-start: auto; text-align: left; min-width: 0; }
   .app-header-profit-label { font-size: 11px; opacity: 0.6; white-space: nowrap; }
   .app-header-profit-value { font-size: 17px; font-weight: 700; white-space: nowrap; }
@@ -93,19 +124,19 @@
   .balance-section-label { font-size: 12px; font-weight: 700; color: var(--ink-60); margin: 10px 2px 6px; }
   .balance-section-header { display: flex; align-items: center; justify-content: space-between; margin: 10px 2px 6px; }
   .toolbar-btn {
-    background: #fff; border: 1px solid var(--ink-10); border-radius: 10px; padding: 7px;
+    background: var(--surface); border: 1px solid var(--ink-10); border-radius: 10px; padding: 7px;
     display: flex; align-items: center; justify-content: center;
   }
   .toolbar-btn:active { background: var(--ink-08); }
   .balance-collapsed-hint {
-    font-size: 12px; color: var(--ink-40); background: #fff; border: 1px dashed var(--ink-15);
+    font-size: 12px; color: var(--ink-40); background: var(--surface); border: 1px dashed var(--ink-15);
     border-radius: 12px; padding: 12px; text-align: center; margin-bottom: 8px;
   }
   .balance-card-limit { font-size: 10.5px; font-weight: 600; margin-top: 4px; }
   .balance-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .balance-row-flex { display: flex; gap: 8px; }
   .balance-card {
-    background: #fff; border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
+    background: var(--surface); border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
     flex: 1; min-width: 0;
   }
   .balance-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
@@ -118,7 +149,7 @@
 
   /* Fawry wide card */
   .fawry-card {
-    background: #fff; border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
+    background: var(--surface); border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
     grid-column: 1 / -1;
   }
   .fawry-card-title {
@@ -138,7 +169,7 @@
 
   /* Instapay wide card */
   .instapay-wide-card {
-    background: #fff; border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
+    background: var(--surface); border-radius: 14px; padding: 12px 14px; border: 1px solid var(--ink-10);
     margin-bottom: 8px;
   }
   .instapay-wide-title {
@@ -158,7 +189,7 @@
   /* Empty / start state */
   .empty-state { text-align: center; padding: 40px 10px; }
   .empty-state-icon {
-    width: 64px; height: 64px; border-radius: 18px; background: #fff; margin: 0 auto 16px;
+    width: 64px; height: 64px; border-radius: 18px; background: var(--surface); margin: 0 auto 16px;
     display: flex; align-items: center; justify-content: center; border: 1px solid var(--ink-10);
   }
   .empty-state-title { font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 17px; margin-bottom: 6px; }
@@ -176,7 +207,7 @@
   .tx-list-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; row-gap: 6px; }
   .tx-list-title { font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 14.5px; }
   .tx-list-count { font-size: 12px; color: var(--ink-40); }
-  .tx-list-box { background: #fff; border-radius: 16px; border: 1px solid var(--ink-10); padding: 4px 10px; }
+  .tx-list-box { background: var(--surface); border-radius: 16px; border: 1px solid var(--ink-10); padding: 4px 10px; }
   .tx-list-box.empty { padding: 20px; }
   .tx-list-empty { text-align: center; color: var(--ink-40); font-size: 13px; padding: 10px 0; }
 
@@ -207,14 +238,14 @@
     box-shadow: 0 6px 18px rgba(0,0,0,0.25);
   }
   .action-bar-close {
-    min-height: var(--actionbar-h); background: #fff; color: var(--ink); border: 1.5px solid var(--ink-15); border-radius: 14px;
+    min-height: var(--actionbar-h); background: var(--surface); color: var(--ink); border: 1.5px solid var(--ink-15); border-radius: 14px;
     padding: 13px 16px; font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 14px;
     white-space: nowrap;
   }
 
   /* Closed stamp */
   .closed-stamp {
-    background: #fff; border-radius: 16px; padding: 18px 16px; margin-bottom: 16px; text-align: center;
+    background: var(--surface); border-radius: 16px; padding: 18px 16px; margin-bottom: 16px; text-align: center;
   }
   .closed-stamp-badge {
     display: inline-flex; align-items: center; gap: 8px; padding: 6px 16px; border-radius: 999px;
@@ -246,7 +277,7 @@
   .field-label { font-family: 'Tajawal', sans-serif; font-size: 13px; color: var(--ink-60); margin-bottom: 6px; font-weight: 600; }
   .input {
     width: 100%; box-sizing: border-box; border: 1.5px solid var(--ink-15); border-radius: 12px;
-    padding: 11px 13px; font-size: 16px; font-family: 'Tajawal', sans-serif; background: #fff; color: var(--ink); outline: none;
+    padding: 11px 13px; font-size: 16px; font-family: 'Tajawal', sans-serif; background: var(--surface); color: var(--ink); outline: none;
     touch-action: manipulation;
   }
   .field-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px; }
@@ -258,14 +289,14 @@
   .chip-row.wrap { flex-wrap: wrap; }
   .chip-btn {
     flex: 1; padding: 10px 6px; border-radius: 12px; border: 1.5px solid var(--ink-15);
-    background: #fff; color: var(--ink); font-size: 13px; font-weight: 700; text-align: center;
+    background: var(--surface); color: var(--ink); font-size: 13px; font-weight: 700; text-align: center;
   }
   .chip-btn.active { border-color: var(--ink); background: var(--ink); color: var(--paper); }
   .chip-btn.small { flex: none; padding: 9px 14px; font-size: 13.5px; font-weight: 600; }
 
   .subtype-btn {
     flex: 1; padding: 11px 8px; border-radius: 12px; border: 1.5px solid var(--ink-15);
-    background: #fff; color: var(--ink-60); font-size: 13.5px; font-weight: 700;
+    background: var(--surface); color: var(--ink-60); font-size: 13.5px; font-weight: 700;
     display: flex; flex-direction: column; align-items: center; gap: 4px;
   }
   .subtype-btn.withdraw.active { border-color: var(--steel); background: #e7ecef; color: var(--steel); }
@@ -274,7 +305,7 @@
   .warn-box { font-size: 13px; color: var(--rust); background: #f3e0da; padding: 12px; border-radius: 10px; margin-bottom: 14px; }
   .info-box { font-size: 13px; color: var(--steel); background: #e7ecef; padding: 12px; border-radius: 10px; margin-bottom: 14px; }
 
-  .close-row { margin-bottom: 14px; background: #fff; border-radius: 14px; padding: 13px; border: 1px solid var(--ink-10); }
+  .close-row { margin-bottom: 14px; background: var(--surface); border-radius: 14px; padding: 13px; border: 1px solid var(--ink-10); }
   .close-row-top { display: flex; justify-content: space-between; margin-bottom: 8px; }
   .close-row-label { font-size: 13.5px; font-weight: 700; color: var(--ink); }
   .close-row-expected { font-size: 12px; color: var(--ink-60); }
@@ -284,7 +315,7 @@
   /* Archive */
   .archive-title { font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 15px; margin-bottom: 12px; }
   .archive-empty { text-align: center; color: var(--ink-40); font-size: 13px; padding: 40px 0; }
-  .archive-list { background: #fff; border-radius: 16px; border: 1px solid var(--ink-10); overflow: hidden; }
+  .archive-list { background: var(--surface); border-radius: 16px; border: 1px solid var(--ink-10); overflow: hidden; }
   .archive-list-item {
     width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 14px 16px;
     background: none; border: none; border-top: 1px solid var(--ink-08); text-align: right;
@@ -297,7 +328,7 @@
   .section-title { font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 14px; margin: 14px 0 8px; }
 
   /* Services view */
-  .services-list { background: #fff; border-radius: 16px; border: 1px solid var(--ink-10); overflow: hidden; margin-bottom: 20px; }
+  .services-list { background: var(--surface); border-radius: 16px; border: 1px solid var(--ink-10); overflow: hidden; margin-bottom: 20px; }
   .services-row { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--ink-08); }
   .services-row:first-child { border-top: none; }
   .services-row-name { flex: 1; font-size: 14px; font-weight: 600; color: var(--ink); }
@@ -312,14 +343,14 @@
     transform: translateZ(0); will-change: transform;
   }
   .tab-bar {
-    width: 100%; max-width: 480px; min-height: var(--tabbar-h); background: var(--ink); display: flex;
+    width: 100%; max-width: 480px; min-height: var(--tabbar-h); background: var(--header-bg); display: flex;
     padding: 8px 10px calc(8px + var(--safe-b)); border-top-left-radius: 18px; border-top-right-radius: 18px;
   }
   .tab-btn {
     flex: 1; min-width: 0; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
-    padding: 6px 0; color: rgba(242,236,218,0.45); position: relative;
+    padding: 6px 0; color: var(--header-fg-dim); position: relative;
   }
-  .tab-btn.active { color: var(--paper); }
+  .tab-btn.active { color: var(--header-fg); }
   .tab-btn-label { font-size: 11px; font-weight: 600; white-space: nowrap; }
   .tab-btn-dot { position: absolute; top: 2px; left: calc(50% + 8px); width: 6px; height: 6px; border-radius: 99px; background: var(--emerald); }
 
@@ -659,6 +690,7 @@ const state = {
   editingArchiveDay: false,
   liveDayBackup: null, // { key, data } — نسخة من اليوم الحالي وقت الدخول لوضع تعديل الأرشيف
   balanceBreakdownMachineId: null, // ✦ NEW: لعرض تفاصيل حساب رصيد فوري (تشخيص)
+  theme: "light", // ✦ NEW: "light" أو "dark"
 };
 
 try {
@@ -666,6 +698,30 @@ try {
   const savedSections = JSON.parse(localStorage.getItem("cashapp_collapsedSections") || "null");
   if (savedSections) state.collapsedSections = { ...state.collapsedSections, ...savedSections };
 } catch (e) {}
+
+/* ✦ NEW: Dark mode — بيقرأ آخر اختيار محفوظ، وإلا بيتبع إعدادات الجهاز */
+try {
+  const savedTheme = localStorage.getItem("cashapp_theme");
+  if (savedTheme === "dark" || savedTheme === "light") {
+    state.theme = savedTheme;
+  } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+    state.theme = "dark";
+  }
+} catch (e) {}
+applyTheme();
+
+function isDarkMode() { return state.theme === "dark"; }
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", state.theme);
+  const meta = document.getElementById("theme-color-meta");
+  if (meta) meta.setAttribute("content", state.theme === "dark" ? "#000000" : "#17262b");
+}
+function toggleTheme() {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  try { localStorage.setItem("cashapp_theme", state.theme); } catch (e) {}
+  applyTheme();
+  render();
+}
 
 function toggleBalancesHidden() {
   state.balancesHidden = !state.balancesHidden;
@@ -1072,7 +1128,7 @@ function logout() {
 function renderLoginScreen() {
   return `
     <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
-      <div style="width:100%; max-width:340px; background:#fff; border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
+      <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
         <div style="text-align:center; margin-bottom:20px;">
           <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("store",{size:26,color:"var(--ink-60)"})}</div>
           <div class="empty-state-title">دفتر المحل</div>
@@ -1141,7 +1197,16 @@ const TINT15 = {
   "var(--gold)": "#f3ebde",
   "var(--rust)": "#f1e1df",
 };
-function tint15(color) { return TINT15[color] || "#eee"; }
+const TINT15_DARK = {
+  "var(--steel)": "rgba(110,163,196,0.18)",
+  "var(--emerald)": "rgba(62,168,132,0.18)",
+  "var(--gold)": "rgba(214,162,74,0.18)",
+  "var(--rust)": "rgba(224,104,90,0.18)",
+};
+function tint15(color) {
+  const map = isDarkMode() ? TINT15_DARK : TINT15;
+  return map[color] || (isDarkMode() ? "rgba(240,240,240,0.08)" : "#eee");
+}
 
 /* ===============================================================
    Render dispatch
@@ -1196,7 +1261,7 @@ function renderHeader(profit) {
   return `
     <div class="app-header">
       <div class="app-header-row">
-        <div class="app-header-logo">${icon("store", {size:19, color:"var(--ink)"})}</div>
+        <div class="app-header-logo">${icon("store", {size:19, color:"var(--header-bg)"})}</div>
         <div>
           <div class="app-header-title">دفتر المحل${state.editingArchiveDay ? " · تعديل أرشيف" : ""}</div>
           <div class="app-header-date">${displayDate(state.today)}</div>
@@ -1207,8 +1272,8 @@ function renderHeader(profit) {
             <div class="app-header-profit-value num">${money(profit)} <span style="font-size:11px;font-weight:400;">ج.م</span></div>
           </div>
           ${(canEdit() && !state.editingArchiveDay) ? `
-          <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:rgba(242,236,218,0.12); border-radius:10px;">
-            ${icon("rotate-ccw", {size:17, color:"var(--paper)"})}
+          <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:var(--ink-08); border-radius:10px;">
+            ${icon("rotate-ccw", {size:17, color:"var(--header-fg)"})}
           </button>` : ""}` : ""}
       </div>
     </div>
@@ -1499,9 +1564,14 @@ function renderTodayView(live) {
   return `
     ${closed && d.closing ? renderClosedStamp(d.closing, live, d.closedBy) : ""}
     ${closed ? `
-      <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:16px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.today, state.dayData)">
+      <button id="pdf-download-btn" class="primary-btn" style="margin-bottom:10px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="downloadDayPDF(state.today, state.dayData)">
         ${icon("download",{size:16})} تحميل PDF
       </button>
+      ${(canEdit() && !state.editingArchiveDay) ? `
+        <button class="primary-btn" style="margin-bottom:16px; background:var(--emerald); display:flex; align-items:center; justify-content:center; gap:8px;" onclick="confirmStartNewDay()">
+          ${icon("rotate-ccw",{size:16})} بدء يوم جديد
+        </button>
+      ` : ""}
     ` : ""}
     ${renderBalancesGrid(live)}
     <div class="tx-list-header">
@@ -1642,43 +1712,212 @@ async function downloadDayPDF(dayKey, dayData) {
   try {
     const live = computeLive(dayData);
     const profitTotal = (dayData.transactions || []).reduce((a,t)=>a+num(t.profit), 0);
+    const commissionTotal = (dayData.transactions || []).reduce((a,t)=>a+num(t.commission), 0);
     const txs = [...(dayData.transactions || [])].reverse();
     const wrap = document.createElement("div");
-    wrap.style.cssText = "position:fixed; top:0; left:-99999px; width:760px; background:#ffffff; padding:28px; font-family:'Tajawal',sans-serif; direction:rtl; color:#17262b;";
-    wrap.innerHTML = `
-      <div style="font-family:'Cairo',sans-serif; font-weight:800; font-size:20px; margin-bottom:4px;">دفتر المحل — تقرير يوم</div>
-      <div style="font-size:13px; color:#5a6b70; margin-bottom:18px;">${displayDate(dayKey)}${dayData.closedAt ? " · اتقفل الساعة " + dayData.closedAt : ""}</div>
-      <div style="font-size:14.5px; font-weight:700; margin-bottom:16px;">مكسب اليوم: <span class="num">${money(profitTotal)}</span> ج.م</div>
-      ${dayData.status === "closed" && dayData.closing ? renderClosedStamp(dayData.closing, live, dayData.closedBy) : ""}
-      ${renderBalancesGrid(live)}
-      <div class="section-title">المعاملات (${txs.length})</div>
-      <div class="tx-list-box ${txs.length ? '' : 'empty'}">
-        ${txs.length === 0 ? '<div class="tx-list-empty">لا توجد معاملات</div>' : txs.map(t => renderTxRow(t, false)).join("")}
-      </div>
-    `;
+    wrap.style.cssText = "position:fixed; top:0; left:-99999px; width:800px; background:#ffffff;";
+    wrap.innerHTML = buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, txs);
     document.body.appendChild(wrap);
-    const canvas = await html2canvas(wrap, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
-    document.body.removeChild(wrap);
+
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF("p", "mm", "a4");
-    const pageWidth = 210, pageHeight = 297;
-    const imgWidth = pageWidth;
-    const imgHeight = canvas.height * imgWidth / canvas.width;
-    const imgData = canvas.toDataURL("image/png");
-    let heightLeft = imgHeight, position = 0;
-    pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight; pdf.addPage();
-      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
+    const pageWidthMm = 210, pageHeightMm = 297, marginMm = 0;
+    const usableWidthMm = pageWidthMm - marginMm * 2;
+    const usableHeightMm = pageHeightMm - marginMm * 2;
+
+    // ✦ نلف كل "صفحة" (بلوك بعرض ثابت) في عنصر منفصل ونصوّرها لوحدها لضمان نص عربي واضح وحدود صفحات نظيفة
+    const pages = wrap.querySelectorAll(".pdf-page");
+    for (let i = 0; i < pages.length; i++) {
+      const canvas = await html2canvas(pages[i], { scale: 2.2, backgroundColor: "#ffffff", useCORS: true });
+      const imgData = canvas.toDataURL("image/png");
+      const imgHeightMm = canvas.height * usableWidthMm / canvas.width;
+      if (i > 0) pdf.addPage();
+      pdf.addImage(imgData, "PNG", marginMm, marginMm, usableWidthMm, Math.min(imgHeightMm, usableHeightMm));
     }
+    document.body.removeChild(wrap);
     pdf.save(`تقرير-${dayKey}.pdf`);
   } catch (e) {
     console.error(e); alert("حصل خطأ أثناء إنشاء الـ PDF.");
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = btnOriginal; }
   }
+}
+
+/* ✦ NEW: تصميم تقرير PDF منظم (جداول حقيقية) بدل صورة من واجهة التطبيق */
+function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, txs) {
+  const F = "font-family:'Tajawal','Cairo',sans-serif;";
+  const HEAD = "font-family:'Cairo',sans-serif;font-weight:800;";
+  const pageStyle = `${F} width:800px; box-sizing:border-box; padding:36px 40px; direction:rtl; color:#17262b; background:#ffffff;`;
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+
+  const headerBlock = `
+    <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #17262b; padding-bottom:14px; margin-bottom:20px;">
+      <div>
+        <div style="${HEAD} font-size:22px;">دفتر المحل</div>
+        <div style="font-size:12.5px; color:#5a6b70; margin-top:2px;">تقرير يومي مفصّل</div>
+      </div>
+      <div style="text-align:left;">
+        <div style="font-size:14px; font-weight:700;">${esc(displayDate(dayKey))}</div>
+        <div style="font-size:11.5px; color:#5a6b70; margin-top:2px;">${dayData.status === "closed" ? `مقفول${dayData.closedAt ? " الساعة " + esc(dayData.closedAt) : ""}${dayData.closedBy ? " بواسطة " + esc(dayData.closedBy) : ""}` : "مفتوح"}</div>
+      </div>
+    </div>
+  `;
+
+  const summaryCards = [
+    { label: "مكسب اليوم", value: money(profitTotal), color: "#1f6f54" },
+    { label: "عدد المعاملات", value: String(txs.length), color: "#17262b" },
+    { label: "إجمالي العمولات", value: money(commissionTotal), color: "#ad7a26" },
+  ];
+  const summaryBlock = `
+    <div style="display:flex; gap:12px; margin-bottom:22px;">
+      ${summaryCards.map(c => `
+        <div style="flex:1; border:1px solid #e3ddc9; border-radius:8px; padding:12px 14px;">
+          <div style="font-size:11px; color:#5a6b70; margin-bottom:4px;">${c.label}</div>
+          <div style="font-size:17px; font-weight:700; color:${c.color};">${c.value}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  // ✦ جدول الأرصدة كجدول حقيقي (مش كروت واجهة)
+  const balanceRows = [];
+  balanceRows.push(["الدرج (كاش)", money(live.drawer)]);
+  balanceRows.push(["الدرج (مكن)", money(live.machineDrawer)]);
+  WALLET_IDS.forEach(id => balanceRows.push([state.walletNames[id], money(live.wallets[id])]));
+  ipAccounts.forEach(acc => balanceRows.push([acc.name, money(num(live.instapayAccounts?.[acc.id] ?? 0))]));
+  state.machines.forEach(m => {
+    const subs = machineSubs(m);
+    if (subs) subs.forEach(s => balanceRows.push([`${m.name} - ${s}`, money(machineBalValue(live.machines[m.id], s))]));
+    else balanceRows.push([m.name, money(machineBalValue(live.machines[m.id]))]);
+  });
+  balanceRows.push(["حساب إسلام", money(live.islamBalance)]);
+  const debtRows = state.machines
+    .map(m => ({ name: m.name, val: num(live.machineDebts?.[m.id]) }))
+    .filter(x => Math.abs(x.val) >= 0.01);
+  debtRows.forEach(d => balanceRows.push([`مديونية ${d.name}`, money(d.val)]));
+
+  const tableStyle = "width:100%; border-collapse:collapse; font-size:12px;";
+  const thStyle = "background:#17262b; color:#f2ecda; text-align:right; padding:8px 10px; font-weight:700;";
+  const tdStyle = "padding:7px 10px; border-bottom:1px solid #eee4cc;";
+
+  const balanceTable = `
+    <div style="${HEAD} font-size:14px; margin-bottom:8px;">الأرصدة في نهاية اليوم</div>
+    <table style="${tableStyle} margin-bottom:24px;">
+      <thead><tr><th style="${thStyle}">البند</th><th style="${thStyle} text-align:left;">الرصيد (ج.م)</th></tr></thead>
+      <tbody>
+        ${balanceRows.map((r, i) => `
+          <tr style="${i % 2 === 1 ? 'background:#faf7ec;' : ''}">
+            <td style="${tdStyle}">${esc(r[0])}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${r[1]}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+
+  // ✦ جدول تسوية الإغلاق (لو اليوم مقفول) — متوقع مقابل فعلي والفرق
+  let closingTable = "";
+  if (dayData.status === "closed" && dayData.closing) {
+    const c = dayData.closing;
+    const rows = [];
+    rows.push(["الدرج (كاش)", live.drawer, num(c.drawer)]);
+    rows.push(["الدرج (مكن)", live.machineDrawer, num(c.machineDrawer)]);
+    WALLET_IDS.forEach(id => rows.push([state.walletNames[id], live.wallets[id], num(c.wallets?.[id])]));
+    ipAccounts.forEach(acc => rows.push([acc.name, num(live.instapayAccounts?.[acc.id] ?? 0), num(c.instapayAccounts?.[acc.id] ?? c.instapay ?? 0)]));
+    state.machines.forEach(m => {
+      const subs = machineSubs(m);
+      if (subs) subs.forEach(s => rows.push([`${m.name} - ${s}`, machineBalValue(live.machines[m.id], s), machineBalValue(c.machines?.[m.id], s)]));
+      else rows.push([m.name, machineBalValue(live.machines[m.id]), machineBalValue(c.machines?.[m.id])]);
+    });
+    rows.push(["حساب إسلام", live.islamBalance, num(c.islamBalance)]);
+    closingTable = `
+      <div style="${HEAD} font-size:14px; margin-bottom:8px;">تسوية الإغلاق (المتوقع مقابل الفعلي)</div>
+      <table style="${tableStyle} margin-bottom:24px;">
+        <thead><tr>
+          <th style="${thStyle}">البند</th>
+          <th style="${thStyle} text-align:left;">المتوقع</th>
+          <th style="${thStyle} text-align:left;">الفعلي</th>
+          <th style="${thStyle} text-align:left;">الفرق</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map((r, i) => {
+            const diff = r[2] - r[1];
+            const ok = Math.abs(diff) < 0.01;
+            return `
+              <tr style="${i % 2 === 1 ? 'background:#faf7ec;' : ''}">
+                <td style="${tdStyle}">${esc(r[0])}</td>
+                <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${money(r[1])}</td>
+                <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${money(r[2])}</td>
+                <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace; color:${ok ? '#1f6f54' : '#a13a2a'}; font-weight:700;">${money(diff)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // ✦ جدول المعاملات كجدول حقيقي بأعمدة
+  const txLabel = (t) => {
+    if (t.category === "vodafone") return `فودافون كاش · ${t.subtype} · ${esc(state.walletNames[t.walletId] || t.walletId)}`;
+    if (t.category === "instapay") return `انستاباي · ${t.subtype} · ${esc(getInstapayAccountName(t.instapayAccountId))}`;
+    if (t.category === "islam") return `حساب إسلام · ${t.subtype}`;
+    if (t.category === "expense") return `خوارج · ${esc(t.destination || "—")}`;
+    if (t.category === "cash") return `نقدية · ${esc(t.destination || "—")}`;
+    if (t.category === "machineDebt") { const m = state.machines.find(mm=>mm.id===t.machineId); return `مديونية (المكن) · ${esc(m?m.name:"—")}`; }
+    if (t.category === "machineDebtPayment") { const m = state.machines.find(mm=>mm.id===t.machineId); return `سداد مديونية (المكن) · ${esc(m?m.name:"—")}`; }
+    if (t.category === "fawrySettlement") {
+      const m = state.machines.find(mm=>mm.id===t.machineId);
+      const parts = [];
+      if (num(t.fawryPaidFromMadfoat) > 0) parts.push(`مسدد ${money(num(t.fawryPaidFromMadfoat))}`);
+      if (num(t.fawryPaidFromVisa) > 0) parts.push(`فيزا ${money(num(t.fawryPaidFromVisa))}`);
+      if (num(t.fawryTopUpMadfoat) > 0) parts.push(`زيادة ${money(num(t.fawryTopUpMadfoat))}`);
+      return `تسوية فوري · ${esc(m?m.name:"—")}${parts.length ? " · " + esc(parts.join(" / ")) : ""}`;
+    }
+    const m = state.machines.find(mm=>mm.id===t.machineId);
+    return `شحن مكن · ${esc(m?m.name:"—")}${t.machineSub ? " · " + esc(t.machineSub) : ""}`;
+  };
+  const txTable = `
+    <div style="${HEAD} font-size:14px; margin-bottom:8px;">سجل المعاملات (${txs.length})</div>
+    ${txs.length === 0 ? `<div style="font-size:12.5px; color:#8a8478; padding:10px 0;">لا توجد معاملات</div>` : `
+    <table style="${tableStyle}">
+      <thead><tr>
+        <th style="${thStyle}">الوقت</th>
+        <th style="${thStyle}">التفاصيل</th>
+        <th style="${thStyle} text-align:left;">المبلغ</th>
+        <th style="${thStyle} text-align:left;">المكسب</th>
+        <th style="${thStyle}">بواسطة</th>
+      </tr></thead>
+      <tbody>
+        ${txs.map((t, i) => `
+          <tr style="${i % 2 === 1 ? 'background:#faf7ec;' : ''}">
+            <td style="${tdStyle} white-space:nowrap; direction:ltr; text-align:right; font-family:monospace;">${esc(t.time || "")}</td>
+            <td style="${tdStyle}">${txLabel(t)}${t.note ? `<div style="font-size:10.5px;color:#8a8478;">${esc(t.note)}</div>` : ""}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${money(num(t.amount))}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace; color:#1f6f54;">${num(t.profit) > 0 ? money(num(t.profit)) : "—"}</td>
+            <td style="${tdStyle} font-size:11px; color:#5a6b70;">${esc(t.createdBy || "—")}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+    `}
+  `;
+
+  const footer = `
+    <div style="margin-top:26px; padding-top:12px; border-top:1px solid #e3ddc9; font-size:10px; color:#8a8478; text-align:center;">
+      تم إنشاء هذا التقرير تلقائيًا من دفتر المحل
+    </div>
+  `;
+
+  // ✦ نلف المحتوى في صفحة واحدة طويلة؛ html2canvas هيصوّرها وهنقسمها لصفحات A4 لاحقًا بمنطق بسيط (صفحة واحدة كافية غالبًا، والامتداد بيتقطع تلقائيًا لو طويل)
+  return `<div class="pdf-page" style="${pageStyle}">
+    ${headerBlock}
+    ${summaryBlock}
+    ${balanceTable}
+    ${closingTable}
+    ${txTable}
+    ${footer}
+  </div>`;
 }
 
 function confirmDeleteTx(id) {
@@ -2628,7 +2867,7 @@ function renderCloseSheetBody() {
   let html = `
     <div class="tx-list-header">
       <div class="tx-list-title">معاملات اليوم (${txs.length})</div>
-      <button id="pdf-download-btn" style="display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:10px; border:1.5px solid var(--ink-15); background:#fff; font-size:12.5px; font-weight:700; color:var(--ink);" onclick="downloadDayPDF(state.today, state.dayData)">
+      <button id="pdf-download-btn" style="display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:10px; border:1.5px solid var(--ink-15); background:var(--surface); font-size:12.5px; font-weight:700; color:var(--ink);" onclick="downloadDayPDF(state.today, state.dayData)">
         ${icon("download",{size:14})} تحميل PDF
       </button>
     </div>
@@ -2980,6 +3219,21 @@ function renderServicesView() {
       </div>
     </div>
 
+    <!-- المظهر -->
+    <div class="archive-title">المظهر</div>
+    <div class="services-list" style="margin-bottom:20px;">
+      <div class="services-row" style="cursor:pointer;" onclick="toggleTheme()">
+        ${icon(isDarkMode() ? "eye-off" : "eye",{size:16,color:"var(--ink-60)"})}
+        <div class="services-row-name">الوضع الليلي (Dark Mode)</div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="font-size:12px; color:var(--ink-60);">${isDarkMode() ? "مفعّل" : "متوقف"}</span>
+          <div style="width:38px; height:22px; border-radius:99px; background:${isDarkMode() ? 'var(--emerald)' : 'var(--ink-15)'}; position:relative; transition:background 0.15s;">
+            <div style="width:16px; height:16px; border-radius:99px; background:#fff; position:absolute; top:3px; ${isDarkMode() ? 'right:3px;' : 'left:3px;'} transition:all 0.15s;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- إدارة اليوم -->
     <div class="archive-title">إدارة اليوم</div>
     <div class="services-list" style="margin-bottom:20px;">
@@ -3203,6 +3457,57 @@ document.addEventListener('touchend', e => {
   __lastTouchEnd = now;
 }, { passive: false });
 document.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
+/* ===============================================================
+   PWA: Manifest (Blob) + Service Worker (ملف حقيقي sw.js لازم يترفع جنب index.html)
+   =============================================================== */
+function setupPWA() {
+  try {
+    // ✦ أيقونة SVG بسيطة بنفس هوية التطبيق، بنستخدمها كأيقونة PWA (192 و512)
+    const iconSvg = (size) => `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24">
+        <rect width="24" height="24" rx="6" fill="#17262b"/>
+        <path d="M5 9l1.2-4h11.6L19 9" stroke="#f2ecda" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9" stroke="#f2ecda" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5" stroke="#f2ecda" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+    const svgToDataUri = (svg) => "data:image/svg+xml," + encodeURIComponent(svg);
+
+    // ✦ المانيفست شغال بصيغة Blob عادي (مفيش قيود المتصفحات عليه زي الـ Service Worker)
+    const manifest = {
+      name: "دفتر المحل",
+      short_name: "دفتر المحل",
+      description: "تطبيق إدارة حسابات المحل اليومية",
+      start_url: ".",
+      scope: ".",
+      display: "standalone",
+      orientation: "portrait",
+      background_color: "#17262b",
+      theme_color: "#17262b",
+      dir: "rtl",
+      lang: "ar",
+      icons: [
+        { src: svgToDataUri(iconSvg(192)), sizes: "192x192", type: "image/svg+xml", purpose: "any" },
+        { src: svgToDataUri(iconSvg(512)), sizes: "512x512", type: "image/svg+xml", purpose: "any" },
+        { src: svgToDataUri(iconSvg(192)), sizes: "192x192", type: "image/svg+xml", purpose: "maskable" }
+      ]
+    };
+    const manifestBlob = new Blob([JSON.stringify(manifest)], { type: "application/manifest+json" });
+    const manifestUrl = URL.createObjectURL(manifestBlob);
+    const link = document.getElementById("pwa-manifest-link");
+    if (link) link.href = manifestUrl;
+
+    // ✦ الـ Service Worker لازم يكون ملف حقيقي على نفس السيرفر (المتصفحات بترفض تسجيله من Blob URL لأسباب أمنية)
+    // لازم ترفع ملف sw.js (اللي هوصلك جنب index.html) في نفس مجلد index.html على السيرفر عشان الخاصية دي تشتغل.
+    // لو الملف مش موجود، هيفشل بهدوء من غير ما يأثر على باقي التطبيق.
+    if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+      navigator.serviceWorker.register("./sw.js").catch(err => console.warn("service worker registration skipped (sw.js غير موجود بجانب index.html؟)", err));
+    }
+  } catch (e) {
+    console.warn("setupPWA failed", e);
+  }
+}
+setupPWA();
 
 /* ===============================================================
    Boot
