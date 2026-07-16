@@ -536,6 +536,7 @@ function computeLive(dayData){
   const wallets = { ...o.wallets };
   const machines = { ...(o.machines || {}) };
   const machineDebts = { ...(o.machineDebts || {}) }; // ✦ NEW: مديونية المكن
+  const machineDebtSubs = JSON.parse(JSON.stringify(o.machineDebtSubs || {})); // ✦ NEW: تفصيل مديونية فوري (مدفوعات/خدمات موبايل)
 
   (dayData.transactions || []).forEach(t => {
     const amt = num(t.amount);
@@ -594,43 +595,75 @@ function computeLive(dayData){
       drawer += amt;
     } else if (t.category === "machineDebt") {
       // ✦ NEW: إضافة مديونية على مكينة + زيادة رصيد المكينة بنفس المبلغ
-      machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) + amt;
       const debtMachine = state.machines.find(mm => mm.id === t.machineId);
       const debtSubs = machineSubs(debtMachine);
       if (debtSubs) {
-        // فوري: يتحط في "مدفوعات"
+        // فوري: مبلغ المديونية ممكن يكون مقسّم بين "مدفوعات" و"خدمات موبايل"
+        const madfoatPart = num(t.debtMadfoat ?? t.amount ?? 0); // توافق مع بيانات قديمة (كانت كلها بتروح مدفوعات)
+        const khadamatPart = num(t.debtKhadamat ?? 0);
+        const totalDebt = madfoatPart + khadamatPart;
+        machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) + totalDebt;
+        const subsDebt = machineDebtSubs[t.machineId] || { "مدفوعات": 0, "خدمات موبايل": 0 };
+        subsDebt["مدفوعات"] = (subsDebt["مدفوعات"] || 0) + madfoatPart;
+        subsDebt["خدمات موبايل"] = (subsDebt["خدمات موبايل"] || 0) + khadamatPart;
+        machineDebtSubs[t.machineId] = subsDebt;
         const cur = machines[t.machineId];
         const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
-        obj["مدفوعات"] = (obj["مدفوعات"] || 0) + amt;
+        obj["مدفوعات"] = (obj["مدفوعات"] || 0) + madfoatPart;
+        obj["خدمات موبايل"] = (obj["خدمات موبايل"] || 0) + khadamatPart;
         machines[t.machineId] = obj;
       } else {
         // باقي المكن: رصيد عادي
+        machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) + amt;
         machines[t.machineId] = (machines[t.machineId] || 0) + amt;
       }
     } else if (t.category === "machineDebtPayment") {
       // ✦ NEW: سداد مديونية مكينة من الدرج (كاش)
       drawer -= amt;
-      machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - amt;
+      const debtBefore = machineDebts[t.machineId] || 0;
+      machineDebts[t.machineId] = debtBefore - amt;
+      // ✦ لو المكينة فوري، قلّل تفصيل المدفوعات/خدمات موبايل بنفس النسبة
+      const paySubs = machineDebtSubs[t.machineId];
+      if (paySubs && debtBefore > 0.005) {
+        const ratio = amt / debtBefore;
+        paySubs["مدفوعات"] = (paySubs["مدفوعات"] || 0) * (1 - ratio);
+        paySubs["خدمات موبايل"] = (paySubs["خدمات موبايل"] || 0) * (1 - ratio);
+      }
     } else if (t.category === "fawrySettlement") {
-      // ✦ NEW: تسوية فوري — المندوب بياخد كاش قد "مدفوعات" وبيدّي كاش قد "فيزا"، وممكن يزود رصيد "مدفوعات"
+      // ✦ NEW: تسوية فوري — المندوب بياخد كاش قد "مدفوعات" (و"خدمات موبايل") وبيدّي كاش قد "فيزا"، وممكن يزود رصيد "مدفوعات"/"خدمات موبايل"
       const paidFromMadfoat = num(t.fawryPaidFromMadfoat);   // المبلغ المسدد (المأخوذ) من المدفوعات
+      const paidFromKhadamat = num(t.fawryPaidFromKhadamat); // ✦ NEW: المبلغ المسدد (المأخوذ) من خدمات موبايل
       const paidFromVisa = num(t.fawryPaidFromVisa);         // المبلغ المدفوع من الفيزا
       const topUpMadfoat = num(t.fawryTopUpMadfoat);         // مبلغ إضافي يتزود على المدفوعات
-      drawer += (-paidFromMadfoat + paidFromVisa - topUpMadfoat);
+      const topUpKhadamat = num(t.fawryTopUpKhadamat);       // ✦ NEW: مبلغ إضافي يتزود على خدمات موبايل
+      drawer += (-paidFromMadfoat - paidFromKhadamat + paidFromVisa - topUpMadfoat - topUpKhadamat);
       const cur = machines[t.machineId];
       const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
       const madfoatBefore = obj["مدفوعات"] || 0;
+      const khadamatBefore = obj["خدمات موبايل"] || 0;
       // ✦ المسدد بيحرّك الرصيد ناحية الصفر (لو الرصيد سالب بيتزود، لو موجب بيتقل)، والزيادة الإضافية بتتضاف عادي
       const madfoatAfterPayment = madfoatBefore < 0 ? (madfoatBefore + paidFromMadfoat) : (madfoatBefore - paidFromMadfoat);
+      const khadamatAfterPayment = khadamatBefore < 0 ? (khadamatBefore + paidFromKhadamat) : (khadamatBefore - paidFromKhadamat);
       obj["مدفوعات"] = madfoatAfterPayment + topUpMadfoat;
+      obj["خدمات موبايل"] = khadamatAfterPayment + topUpKhadamat;
       obj["فيزا"] = (obj["فيزا"] || 0) - paidFromVisa;
       machines[t.machineId] = obj;
-      // ✦ NEW: ربط المبلغ المسدد بسداد مديونية فوري (لو مفعّل)
+      // ✦ NEW: ربط المبلغ المسدد بسداد مديونية فوري (لو مفعّل) — لكل من مدفوعات وخدمات موبايل
       const debtReduction = num(t.fawryDebtReduction);
-      if (debtReduction > 0) machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - debtReduction;
+      if (debtReduction > 0) {
+        machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - debtReduction;
+        const settleSubs = machineDebtSubs[t.machineId];
+        if (settleSubs) settleSubs["مدفوعات"] = (settleSubs["مدفوعات"] || 0) - debtReduction;
+      }
+      const debtReductionKhadamat = num(t.fawryDebtReductionKhadamat); // ✦ NEW
+      if (debtReductionKhadamat > 0) {
+        machineDebts[t.machineId] = (machineDebts[t.machineId] || 0) - debtReductionKhadamat;
+        const settleSubs2 = machineDebtSubs[t.machineId];
+        if (settleSubs2) settleSubs2["خدمات موبايل"] = (settleSubs2["خدمات موبايل"] || 0) - debtReductionKhadamat;
+      }
     }
   });
-  return { drawer, machineDrawer, wallets, instapay, instapayAccounts, machines, islamBalance, machineDebts };
+  return { drawer, machineDrawer, wallets, instapay, instapayAccounts, machines, islamBalance, machineDebts, machineDebtSubs };
 }
 
 /* ===============================================================
@@ -1380,7 +1413,7 @@ function renderBalancesGrid(live) {
             ${state.machines.map(m => {
               const subs = machineSubs(m);
               if (subs) return fawryCard(m, live);
-              return balanceCard("landmark", m.name, machineBalValue(live.machines[m.id]));
+              return machineCard(m, live);
             }).join("")}
           </div>
         `}
@@ -1461,6 +1494,55 @@ function fawryCard(m, live) {
   `;
 }
 
+/* ✦ NEW: كارت مكينة عادية (بدون بنود فرعية) — بنفس فكرة كارت فوري بالظبط: سهم يعرض تفاصيل المعاملات عند الضغط */
+function machineCard(m, live) {
+  const val = machineBalValue(live.machines[m.id]);
+  const neg = val < 0;
+  const display = state.balancesHidden ? "••••" : money(val);
+  return `
+    <div class="balance-card">
+      <div class="balance-card-top" style="justify-content:space-between;">
+        <span style="display:flex; align-items:center; gap:6px; min-width:0;">
+          ${icon("landmark", {size:13, color:"var(--ink-40)"})}
+          <span class="balance-card-label">${esc(m.name)}</span>
+        </span>
+        <button class="icon-btn" title="تفاصيل الحساب" onclick="toggleBalanceBreakdown('${m.id}')" style="flex-shrink:0;">${icon("chevron-down",{size:13,color:"var(--ink-40)"})}</button>
+      </div>
+      <div class="balance-card-value num ${(neg && !state.balancesHidden)?'negative':''}">${display}</div>
+      ${state.balanceBreakdownMachineId === m.id ? renderSimpleMachineBreakdown(m) : ""}
+    </div>
+  `;
+}
+/* ✦ NEW: تفاصيل حساب رصيد مكينة عادية (بدون بنود فرعية) — لتتبع مصدر أي رقم غريب */
+function renderSimpleMachineBreakdown(m) {
+  const o = state.dayData.opening || emptyOpening();
+  const openingVal = num(o.machines?.[m.id]);
+  const rows = [];
+  rows.push({ label: "الرصيد الافتتاحي", amount: openingVal, running: openingVal });
+  let running = openingVal;
+  (state.dayData.transactions || []).forEach(t => {
+    if (t.machineId !== m.id) return;
+    let delta = 0, label = "";
+    if (t.category === "machine" && !t.machineSub) { delta = -num(t.amount); label = `شحن مكن · ${t.time || ""}`; }
+    else if (t.category === "machineDebt") { delta = num(t.amount); label = `مديونية (المكن) · ${t.time || ""}`; }
+    else { return; }
+    running += delta;
+    rows.push({ label, amount: delta, running });
+  });
+  return `
+    <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--ink-15); font-size:11.5px;">
+      <div style="font-weight:700; margin-bottom:6px; color:var(--ink-60);">تفاصيل الرصيد (بالترتيب):</div>
+      ${rows.map(r => `
+        <div style="display:flex; justify-content:space-between; gap:8px; padding:3px 0; color:var(--ink-60);">
+          <span>${esc(r.label)}</span>
+          <span class="num" style="white-space:nowrap;">${r.amount >= 0 && r.label.includes("افتتاحي") ? "" : (r.amount >= 0 ? "+" : "")}${money(r.amount)} <span style="color:var(--ink-40);">→ ${money(r.running)}</span></span>
+        </div>
+      `).join("")}
+      ${rows.length === 1 ? `<div style="color:var(--ink-40); padding-top:4px;">مفيش أي معاملة أثرت على الرصيد في اليوم ده — الرصيد الحالي جاي بالكامل من الرصيد الافتتاحي.</div>` : ""}
+    </div>
+  `;
+}
+
 /* ✦ NEW: تفاصيل حساب رصيد مكينة فوري — لتتبع مصدر أي رقم غريب */
 function toggleBalanceBreakdown(machineId) {
   state.balanceBreakdownMachineId = state.balanceBreakdownMachineId === machineId ? null : machineId;
@@ -1476,7 +1558,7 @@ function renderBalanceBreakdown(m) {
     if (t.machineId !== m.id) return;
     let delta = 0, label = "";
     if (t.category === "machine" && t.machineSub === "مدفوعات") { delta = -num(t.amount); label = `شحن مكن (مدفوعات) · ${t.time || ""}`; }
-    else if (t.category === "machineDebt") { delta = num(t.amount); label = `مديونية (المكن) · ${t.time || ""}`; }
+    else if (t.category === "machineDebt") { delta = num(t.debtMadfoat ?? t.amount ?? 0); label = `مديونية (المكن) - مدفوعات · ${t.time || ""}`; }
     else if (t.category === "fawrySettlement") {
       const before = running;
       const after = madfoatAfterSettlement(before, t.fawryPaidFromMadfoat || 0, t.fawryTopUpMadfoat || 0);
@@ -1523,7 +1605,7 @@ function islamCard(value) {
 /* ✦ NEW: كارت مديونية المكن */
 function machineDebtsCard(live) {
   const debts = state.machines
-    .map(m => ({ name: m.name, val: num(live.machineDebts?.[m.id]) }))
+    .map(m => ({ id: m.id, name: m.name, val: num(live.machineDebts?.[m.id]), subs: machineSubs(m) ? (live.machineDebtSubs?.[m.id] || {}) : null }))
     .filter(x => Math.abs(x.val) >= 0.01);
   return `
     <div class="balance-card" style="width:100%;">
@@ -1531,9 +1613,17 @@ function machineDebtsCard(live) {
       ${debts.length === 0
         ? `<div style="font-size:13px; color:var(--ink-60); font-weight:600;">لا يوجد مديونيات للمكن</div>`
         : debts.map(x => `
-            <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:3px 0;">
-              <div style="font-size:13px; font-weight:700; color:var(--ink);">${esc(x.name)}</div>
-              <div class="num" style="font-size:14px; font-weight:700; color:var(--rust);">${state.balancesHidden ? "••••" : money(x.val)} مديونية</div>
+            <div style="padding:3px 0;">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px;">
+                <div style="font-size:13px; font-weight:700; color:var(--ink);">${esc(x.name)}</div>
+                <div class="num" style="font-size:14px; font-weight:700; color:var(--rust);">${state.balancesHidden ? "••••" : money(x.val)} مديونية</div>
+              </div>
+              ${x.subs ? `
+                <div style="display:flex; justify-content:space-between; gap:8px; font-size:11.5px; color:var(--ink-60); margin-top:2px;">
+                  <span>مدفوعات: <span class="num">${state.balancesHidden ? "••••" : money(num(x.subs["مدفوعات"]))}</span></span>
+                  <span>خدمات موبايل: <span class="num">${state.balancesHidden ? "••••" : money(num(x.subs["خدمات موبايل"]))}</span></span>
+                </div>
+              ` : ""}
             </div>
           `).join("")
       }
@@ -1568,8 +1658,11 @@ function renderTodayView(live) {
         ${icon("download",{size:16})} تحميل PDF
       </button>
       ${(canEdit() && !state.editingArchiveDay) ? `
-        <button class="primary-btn" style="margin-bottom:16px; background:var(--emerald); display:flex; align-items:center; justify-content:center; gap:8px;" onclick="confirmStartNewDay()">
+        <button class="primary-btn" style="margin-bottom:10px; background:var(--emerald); display:flex; align-items:center; justify-content:center; gap:8px;" onclick="confirmStartNewDay()">
           ${icon("rotate-ccw",{size:16})} بدء يوم جديد
+        </button>
+        <button class="primary-btn" style="margin-bottom:16px; background:var(--steel); display:flex; align-items:center; justify-content:center; gap:8px;" onclick="reopenDay()">
+          ${icon("pencil",{size:16})} إعادة فتح اليوم
         </button>
       ` : ""}
     ` : ""}
@@ -1615,7 +1708,10 @@ function renderTxRow(tx, editable) {
   } else if (tx.category === "machineDebt") {
     const m = state.machines.find(mm => mm.id === tx.machineId);
     iconName = "alert-triangle"; color = "var(--rust)";
-    title = `مديونية (المكن) · ${esc(m ? m.name : "—")}`;
+    const debtParts = [];
+    if (num(tx.debtMadfoat) > 0) debtParts.push(`مدفوعات ${money(num(tx.debtMadfoat))}`);
+    if (num(tx.debtKhadamat) > 0) debtParts.push(`خدمات موبايل ${money(num(tx.debtKhadamat))}`);
+    title = `مديونية (المكن) · ${esc(m ? m.name : "—")}${debtParts.length ? " · " + esc(debtParts.join(" / ")) : ""}`;
   } else if (tx.category === "machineDebtPayment") {
     const m = state.machines.find(mm => mm.id === tx.machineId);
     iconName = "check-circle-2"; color = "var(--emerald)";
@@ -1625,9 +1721,12 @@ function renderTxRow(tx, editable) {
     iconName = "landmark"; color = "var(--gold)";
     const parts = [];
     if (num(tx.fawryPaidFromMadfoat) > 0) parts.push(`مسدد من المدفوعات ${money(num(tx.fawryPaidFromMadfoat))}`);
+    if (num(tx.fawryPaidFromKhadamat) > 0) parts.push(`مسدد من خدمات موبايل ${money(num(tx.fawryPaidFromKhadamat))}`);
     if (num(tx.fawryPaidFromVisa) > 0) parts.push(`مدفوع للفيزا ${money(num(tx.fawryPaidFromVisa))}`);
     if (num(tx.fawryTopUpMadfoat) > 0) parts.push(`زيادة مدفوعات ${money(num(tx.fawryTopUpMadfoat))}`);
-    if (num(tx.fawryDebtReduction) > 0) parts.push(`سداد مديونية فوري ${money(num(tx.fawryDebtReduction))}`);
+    if (num(tx.fawryTopUpKhadamat) > 0) parts.push(`زيادة خدمات موبايل ${money(num(tx.fawryTopUpKhadamat))}`);
+    if (num(tx.fawryDebtReduction) > 0) parts.push(`سداد مديونية فوري (مدفوعات) ${money(num(tx.fawryDebtReduction))}`);
+    if (num(tx.fawryDebtReductionKhadamat) > 0) parts.push(`سداد مديونية فوري (خدمات موبايل) ${money(num(tx.fawryDebtReductionKhadamat))}`);
     title = `تسوية فوري · ${esc(m ? m.name : "—")}${parts.length ? " · " + esc(parts.join(" / ")) : ""}`;
   } else {
     const m = state.machines.find(m=>m.id===tx.machineId);
@@ -1869,9 +1968,11 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     if (t.category === "fawrySettlement") {
       const m = state.machines.find(mm=>mm.id===t.machineId);
       const parts = [];
-      if (num(t.fawryPaidFromMadfoat) > 0) parts.push(`مسدد ${money(num(t.fawryPaidFromMadfoat))}`);
+      if (num(t.fawryPaidFromMadfoat) > 0) parts.push(`مسدد مدفوعات ${money(num(t.fawryPaidFromMadfoat))}`);
+      if (num(t.fawryPaidFromKhadamat) > 0) parts.push(`مسدد خدمات موبايل ${money(num(t.fawryPaidFromKhadamat))}`);
       if (num(t.fawryPaidFromVisa) > 0) parts.push(`فيزا ${money(num(t.fawryPaidFromVisa))}`);
-      if (num(t.fawryTopUpMadfoat) > 0) parts.push(`زيادة ${money(num(t.fawryTopUpMadfoat))}`);
+      if (num(t.fawryTopUpMadfoat) > 0) parts.push(`زيادة مدفوعات ${money(num(t.fawryTopUpMadfoat))}`);
+      if (num(t.fawryTopUpKhadamat) > 0) parts.push(`زيادة خدمات موبايل ${money(num(t.fawryTopUpKhadamat))}`);
       return `تسوية فوري · ${esc(m?m.name:"—")}${parts.length ? " · " + esc(parts.join(" / ")) : ""}`;
     }
     const m = state.machines.find(mm=>mm.id===t.machineId);
@@ -1968,6 +2069,15 @@ function confirmStartNewDay() {
   openStartSheet();
 }
 
+function reopenDay() {
+  if (!requireEdit()) return;
+  if (state.dayData.status !== "closed") return;
+  if (!confirm("هيتم إعادة فتح اليوم عشان تقدر تضيف أو تعدّل معاملات فيه تاني. لما تخلّص تقدر تقفله تاني عادي. متأكد؟")) return;
+  state.dayData = { ...state.dayData, status: "open" };
+  persistDay(state.today, state.dayData);
+  render();
+}
+
 function renderStartSheet() {
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   return `
@@ -2017,12 +2127,19 @@ function renderStartSheet() {
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">مديونية المكن (لو فيه)</div>
     ${state.machines.length === 0 ? `<div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>` : `
       <div class="field-2col">
-        ${state.machines.map(m => `
+        ${state.machines.map(m => {
+          const subs = machineSubs(m);
+          if (subs) return `
+            <div class="field"><div class="field-label">${esc(m.name)} - مديونية مدفوعات</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}-مدفوعات"></div>
+            <div class="field"><div class="field-label">${esc(m.name)} - مديونية خدمات موبايل</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}-خدمات موبايل"></div>
+          `;
+          return `
           <div class="field">
             <div class="field-label">${esc(m.name)}</div>
             <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}">
           </div>
-        `).join("")}
+        `;
+        }).join("")}
       </div>
     `}
     <div class="field">
@@ -2060,8 +2177,19 @@ function submitStartDay() {
       return [m.id, el ? num(el.value) : 0];
     })),
     machineDebts: Object.fromEntries(state.machines.map(m => {
+      const subs = machineSubs(m);
+      if (subs) {
+        const madfoatEl = document.getElementById(`sd-debt-${m.id}-مدفوعات`);
+        const khadamatEl = document.getElementById(`sd-debt-${m.id}-خدمات موبايل`);
+        return [m.id, (madfoatEl ? num(madfoatEl.value) : 0) + (khadamatEl ? num(khadamatEl.value) : 0)];
+      }
       const el = document.getElementById(`sd-debt-${m.id}`);
       return [m.id, el ? num(el.value) : 0];
+    })),
+    machineDebtSubs: Object.fromEntries(state.machines.filter(m => machineSubs(m)).map(m => {
+      const madfoatEl = document.getElementById(`sd-debt-${m.id}-مدفوعات`);
+      const khadamatEl = document.getElementById(`sd-debt-${m.id}-خدمات موبايل`);
+      return [m.id, { "مدفوعات": madfoatEl ? num(madfoatEl.value) : 0, "خدمات موبايل": khadamatEl ? num(khadamatEl.value) : 0 }];
     })),
     islamBalance: num(document.getElementById("sd-islam").value),
   };
@@ -2118,7 +2246,17 @@ function renderEditOpeningSheet() {
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:12px 2px 8px;">مديونية المكن</div>
     ${state.machines.length === 0 ? `<div style="font-size:12.5px;color:var(--ink-40);margin-bottom:10px;">لسه مفيش مكن مضافة.</div>` : `
       <div class="field-2col">
-        ${state.machines.map(m => `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" value="${num(o.machineDebts?.[m.id]) || ''}" id="eo-debt-${m.id}"></div>`).join("")}
+        ${state.machines.map(m => {
+          const subs = machineSubs(m);
+          if (subs) {
+            const subsDebt = o.machineDebtSubs?.[m.id] || {};
+            return `
+              <div class="field"><div class="field-label">${esc(m.name)} - مديونية مدفوعات</div><input type="number" inputmode="decimal" class="input" value="${num(subsDebt["مدفوعات"]) || ''}" id="eo-debt-${m.id}-مدفوعات"></div>
+              <div class="field"><div class="field-label">${esc(m.name)} - مديونية خدمات موبايل</div><input type="number" inputmode="decimal" class="input" value="${num(subsDebt["خدمات موبايل"]) || ''}" id="eo-debt-${m.id}-خدمات موبايل"></div>
+            `;
+          }
+          return `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" value="${num(o.machineDebts?.[m.id]) || ''}" id="eo-debt-${m.id}"></div>`;
+        }).join("")}
       </div>
     `}
     <div class="field"><div class="field-label">رصيد حساب إسلام</div><input type="number" inputmode="decimal" class="input" value="${o.islamBalance || ''}" id="eo-islam"></div>
@@ -2150,8 +2288,25 @@ function submitEditOpening() {
       return [m.id, el ? num(el.value) : num(state.dayData.opening?.machines?.[m.id])];
     })),
     machineDebts: Object.fromEntries(state.machines.map(m => {
+      const subs = machineSubs(m);
+      if (subs) {
+        const madfoatEl = document.getElementById(`eo-debt-${m.id}-مدفوعات`);
+        const khadamatEl = document.getElementById(`eo-debt-${m.id}-خدمات موبايل`);
+        if (madfoatEl || khadamatEl) {
+          return [m.id, (madfoatEl ? num(madfoatEl.value) : 0) + (khadamatEl ? num(khadamatEl.value) : 0)];
+        }
+      }
       const el = document.getElementById(`eo-debt-${m.id}`);
       return [m.id, el ? num(el.value) : num(state.dayData.opening?.machineDebts?.[m.id])];
+    })),
+    machineDebtSubs: Object.fromEntries(state.machines.filter(m => machineSubs(m)).map(m => {
+      const madfoatEl = document.getElementById(`eo-debt-${m.id}-مدفوعات`);
+      const khadamatEl = document.getElementById(`eo-debt-${m.id}-خدمات موبايل`);
+      const prevSubs = state.dayData.opening?.machineDebtSubs?.[m.id] || {};
+      return [m.id, {
+        "مدفوعات": madfoatEl ? num(madfoatEl.value) : num(prevSubs["مدفوعات"]),
+        "خدمات موبايل": khadamatEl ? num(khadamatEl.value) : num(prevSubs["خدمات موبايل"]),
+      }];
     })),
     islamBalance: num(document.getElementById("eo-islam").value),
   };
@@ -2177,15 +2332,20 @@ function openTxSheet(txId) {
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
     machineSub: initial?.machineSub || null,
     debtMachineId: initial?.machineId || (state.machines[0]?.id || ""), // ✦ NEW: للمديونية وسدادها
+    debtMadfoat: initial?.debtMadfoat ?? "",   // ✦ NEW: مديونية فوري - مدفوعات
+    debtKhadamat: initial?.debtKhadamat ?? "", // ✦ NEW: مديونية فوري - خدمات موبايل
     instapayAccountId: initial?.instapayAccountId || firstIpId, // ✦ NEW
     destination: initial?.destination ?? "",
     amount: initial?.amount ?? "",
     profit: initial?.profit ?? "",
     commission: initial?.commission ?? "",  // ✦ NEW
     fawryPaidFromMadfoat: initial?.fawryPaidFromMadfoat ?? "", // ✦ NEW
+    fawryPaidFromKhadamat: initial?.fawryPaidFromKhadamat ?? "", // ✦ NEW
     fawryPaidFromVisa: initial?.fawryPaidFromVisa ?? "",       // ✦ NEW
     fawryTopUpMadfoat: initial?.fawryTopUpMadfoat ?? "",       // ✦ NEW
+    fawryTopUpKhadamat: initial?.fawryTopUpKhadamat ?? "",     // ✦ NEW
     fawryReduceDebt: initial ? (num(initial.fawryDebtReduction) > 0) : true,  // ✦ NEW: يعكس القيمة المحفوظة عند التعديل
+    fawryKhadamatReduceDebt: initial ? (num(initial.fawryDebtReductionKhadamat) > 0) : true, // ✦ NEW
     note: initial?.note ?? "",
   };
   state.sheet = "tx";
@@ -2209,10 +2369,12 @@ function txSelectDebtMachine(id) { syncTxFormFromInputs(); state.txForm.debtMach
 /* ✦ NEW: نص المعاينة لتأثير تسوية فوري على الدرج (كاش) */
 function fawrySettlementPreviewText(f) {
   const paid = num(f.fawryPaidFromMadfoat);
+  const khadamatPaid = num(f.fawryPaidFromKhadamat); // ✦ NEW
   const visa = num(f.fawryPaidFromVisa);
   const topUp = num(f.fawryTopUpMadfoat);
-  if (!paid && !visa && !topUp) return "هيتأثر الدرج (كاش) حسب المبالغ اللي هتكتبها فوق.";
-  const netChange = -paid + visa - topUp;
+  const khadamatTopUp = num(f.fawryTopUpKhadamat); // ✦ NEW
+  if (!paid && !khadamatPaid && !visa && !topUp && !khadamatTopUp) return "هيتأثر الدرج (كاش) حسب المبالغ اللي هتكتبها فوق.";
+  const netChange = -paid - khadamatPaid + visa - topUp - khadamatTopUp;
   const sign = netChange > 0 ? "+" : "";
   return `الدرج (كاش) هيتغيّر بمقدار: <span class="num" style="font-weight:700;color:${netChange<0?'var(--rust)':'var(--emerald)'};">${sign}${money(netChange)}</span> ج.م`;
 }
@@ -2237,6 +2399,26 @@ function toggleFawryReduceDebt() {
   state.txForm.fawryReduceDebt = el ? el.checked : true;
 }
 
+/* ✦ NEW: نفس فكرة fawryDebtLinkHtml بالظبط لكن لخدمات موبايل */
+function fawryDebtLinkHtmlKhadamat(f) {
+  const live = computeLive(state.dayData);
+  const curFawryDebt = num(live.machineDebtSubs?.[f.debtMachineId]?.["خدمات موبايل"] ?? 0);
+  const paid = num(f.fawryPaidFromKhadamat);
+  if (curFawryDebt <= 0.005 || paid <= 0) return "";
+  const reduceAmount = Math.min(paid, curFawryDebt);
+  const checked = f.fawryKhadamatReduceDebt !== false; // افتراضيًا مفعّل
+  return `
+    <label style="display:flex; align-items:flex-start; gap:8px; margin-top:8px; font-size:12.5px; color:var(--ink-60); cursor:pointer;">
+      <input type="checkbox" id="fs-reduce-debt-khadamat" style="margin-top:2px;" ${checked ? "checked" : ""} onchange="toggleFawryReduceDebtKhadamat()">
+      <span>هل تريد إزالة مديونية فوري (خدمات موبايل) بقيمة <span class="num" style="font-weight:700; color:var(--ink);">${money(reduceAmount)}</span> ج.م؟</span>
+    </label>
+  `;
+}
+function toggleFawryReduceDebtKhadamat() {
+  const el = document.getElementById("fs-reduce-debt-khadamat");
+  state.txForm.fawryKhadamatReduceDebt = el ? el.checked : true;
+}
+
 /* ✦ NEW: حساب رصيد "مدفوعات" بعد السداد — بيتحرك ناحية الصفر بمقدار المسدد (ويكمل لو عدّى الصفر)، ثم تُضاف الزيادة */
 function madfoatAfterSettlement(before, paid, topUp) {
   const afterPayment = before < 0 ? (before + num(paid)) : (before - num(paid));
@@ -2247,26 +2429,41 @@ function updateFawrySettlementPreview() {
   const f = state.txForm;
   const get = id => { const el = document.getElementById(id); return el ? el.value : ""; };
   f.fawryPaidFromMadfoat = get("fs-madfoat");
+  f.fawryPaidFromKhadamat = get("fs-khadamat"); // ✦ NEW
   f.fawryPaidFromVisa = get("fs-visa");
   f.fawryTopUpMadfoat = get("fs-topup");
+  f.fawryTopUpKhadamat = get("fs-topup-khadamat"); // ✦ NEW
   const out = document.getElementById("fawry-settlement-preview");
   if (out) out.innerHTML = fawrySettlementPreviewText(f);
   const linkWrap = document.getElementById("fawry-debt-link-wrap");
   if (linkWrap) linkWrap.innerHTML = fawryDebtLinkHtml(f);
+  const linkWrapKhadamat = document.getElementById("fawry-debt-link-wrap-khadamat"); // ✦ NEW
+  if (linkWrapKhadamat) linkWrapKhadamat.innerHTML = fawryDebtLinkHtmlKhadamat(f);
   // ✦ تحديث لحظي لكل خانة على حدة
   const live = computeLive(state.dayData);
   const curMadfoat = machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات");
+  const curKhadamat = machineBalValue(live.machines?.[f.debtMachineId], "خدمات موبايل"); // ✦ NEW
   const curVisa = machineBalValue(live.machines?.[f.debtMachineId], "فيزا");
   const madfoatHintEl = document.getElementById("fs-madfoat-hint");
   if (madfoatHintEl) {
     madfoatHintEl.innerHTML = f.fawryPaidFromMadfoat !== ""
       ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : "";
   }
+  const khadamatHintEl = document.getElementById("fs-khadamat-hint"); // ✦ NEW
+  if (khadamatHintEl) {
+    khadamatHintEl.innerHTML = f.fawryPaidFromKhadamat !== ""
+      ? `رصيد خدمات موبايل هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curKhadamat, f.fawryPaidFromKhadamat, f.fawryTopUpKhadamat))}</span> ج.م` : "";
+  }
   liveBalanceHint("fs-visa", "fs-visa-hint", curVisa, -1, "متبقي في الفيزا");
   const topupHintEl = document.getElementById("fs-topup-hint");
   if (topupHintEl) {
     topupHintEl.innerHTML = f.fawryTopUpMadfoat !== ""
       ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : "";
+  }
+  const topupKhadamatHintEl = document.getElementById("fs-topup-khadamat-hint"); // ✦ NEW
+  if (topupKhadamatHintEl) {
+    topupKhadamatHintEl.innerHTML = f.fawryTopUpKhadamat !== ""
+      ? `رصيد خدمات موبايل هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curKhadamat, f.fawryPaidFromKhadamat, f.fawryTopUpKhadamat))}</span> ج.م` : "";
   }
 }
 
@@ -2317,10 +2514,16 @@ function syncTxFormFromInputs() {
   if (get("tx-note") !== undefined) state.txForm.note = get("tx-note");
   if (get("tx-destination") !== undefined) state.txForm.destination = get("tx-destination");
   if (get("fs-madfoat") !== undefined) state.txForm.fawryPaidFromMadfoat = get("fs-madfoat"); // ✦ NEW
+  if (get("fs-khadamat") !== undefined) state.txForm.fawryPaidFromKhadamat = get("fs-khadamat"); // ✦ NEW
   if (get("fs-visa") !== undefined) state.txForm.fawryPaidFromVisa = get("fs-visa"); // ✦ NEW
   if (get("fs-topup") !== undefined) state.txForm.fawryTopUpMadfoat = get("fs-topup"); // ✦ NEW
+  if (get("fs-topup-khadamat") !== undefined) state.txForm.fawryTopUpKhadamat = get("fs-topup-khadamat"); // ✦ NEW
+  if (get("tx-debt-madfoat") !== undefined) state.txForm.debtMadfoat = get("tx-debt-madfoat"); // ✦ NEW
+  if (get("tx-debt-khadamat") !== undefined) state.txForm.debtKhadamat = get("tx-debt-khadamat"); // ✦ NEW
   const reduceEl = document.getElementById("fs-reduce-debt");
   if (reduceEl) state.txForm.fawryReduceDebt = reduceEl.checked; // ✦ NEW
+  const reduceElKhadamat = document.getElementById("fs-reduce-debt-khadamat");
+  if (reduceElKhadamat) state.txForm.fawryKhadamatReduceDebt = reduceElKhadamat.checked; // ✦ NEW
 }
 
 function renderTxSheetBody() {
@@ -2439,9 +2642,18 @@ function renderTxSheetBody() {
       const debtSelMachine = state.machines.find(m => m.id === f.debtMachineId);
       const debtSubs = machineSubs(debtSelMachine);
       const curDebt = num(live.machineDebts?.[f.debtMachineId]);
-      const curBal = debtSubs ? machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات") : machineBalValue(live.machines?.[f.debtMachineId]);
-      const balLabel = debtSubs ? "رصيد المدفوعات الحالي" : "رصيد المكينة الحالي";
-      html += `<div class="info-box">المديونية الحالية: <span class="num" style="font-weight:700;">${money(curDebt)}</span> ج.م · ${balLabel}: <span class="num" style="font-weight:700;">${money(curBal)}</span> ج.م<br>المبلغ هيتسجل كمديونية على المكينة دي، وهيتضاف بنفس القيمة ${debtSubs ? "لرصيد المدفوعات" : "لرصيد المكينة"} (من غير أي تأثير على الدرج).</div>`;
+      if (debtSubs) {
+        const subsDebt = live.machineDebtSubs?.[f.debtMachineId] || {};
+        html += `<div class="info-box">المديونية الحالية: <span class="num" style="font-weight:700;">${money(curDebt)}</span> ج.م
+          <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--ink-10); display:flex; justify-content:space-between;">
+            <span>مدفوعات: <span class="num" style="font-weight:700;">${money(num(subsDebt["مدفوعات"]))}</span></span>
+            <span>خدمات موبايل: <span class="num" style="font-weight:700;">${money(num(subsDebt["خدمات موبايل"]))}</span></span>
+          </div>
+        </div>`;
+      } else {
+        const curBal = machineBalValue(live.machines?.[f.debtMachineId]);
+        html += `<div class="info-box">المديونية الحالية: <span class="num" style="font-weight:700;">${money(curDebt)}</span> ج.م · رصيد المكينة الحالي: <span class="num" style="font-weight:700;">${money(curBal)}</span> ج.م</div>`;
+      }
     }
   }
 
@@ -2495,15 +2707,22 @@ function renderTxSheetBody() {
       }
       const live = computeLive(state.dayData);
       const curMadfoat = machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات");
+      const curKhadamat = machineBalValue(live.machines?.[f.debtMachineId], "خدمات موبايل"); // ✦ NEW
       const curVisa = machineBalValue(live.machines?.[f.debtMachineId], "فيزا");
       const curFawryDebt = num(live.machineDebts?.[f.debtMachineId]);
-      html += `<div class="info-box">رصيد "مدفوعات" الحالي: <span class="num" style="font-weight:700;">${money(curMadfoat)}</span> ج.م · رصيد "فيزا" الحالي: <span class="num" style="font-weight:700;">${money(curVisa)}</span> ج.م${curFawryDebt > 0.005 ? ` · مديونية فوري الحالية: <span class="num" style="font-weight:700;color:var(--rust);">${money(curFawryDebt)}</span> ج.م` : ""}</div>`;
+      html += `<div class="info-box">رصيد "مدفوعات" الحالي: <span class="num" style="font-weight:700;">${money(curMadfoat)}</span> ج.م · رصيد "خدمات موبايل" الحالي: <span class="num" style="font-weight:700;">${money(curKhadamat)}</span> ج.م · رصيد "فيزا" الحالي: <span class="num" style="font-weight:700;">${money(curVisa)}</span> ج.م${curFawryDebt > 0.005 ? ` · مديونية فوري الحالية: <span class="num" style="font-weight:700;color:var(--rust);">${money(curFawryDebt)}</span> ج.م` : ""}</div>`;
       html += `
         <div class="field">
           <div class="field-label">المبلغ المسدد (المأخوذ) من المدفوعات</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-madfoat" value="${esc(f.fawryPaidFromMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
           <div id="fs-madfoat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryPaidFromMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : ""}</div>
           <div id="fawry-debt-link-wrap">${fawryDebtLinkHtml(f)}</div>
+        </div>
+        <div class="field">
+          <div class="field-label">المبلغ المسدد (المأخوذ) من خدمات موبايل</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-khadamat" value="${esc(f.fawryPaidFromKhadamat ?? '')}" oninput="updateFawrySettlementPreview()">
+          <div id="fs-khadamat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryPaidFromKhadamat ? `رصيد خدمات موبايل هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curKhadamat, f.fawryPaidFromKhadamat, f.fawryTopUpKhadamat))}</span> ج.م` : ""}</div>
+          <div id="fawry-debt-link-wrap-khadamat">${fawryDebtLinkHtmlKhadamat(f)}</div>
         </div>
         <div class="field">
           <div class="field-label">المبلغ المدفوع من الفيزا</div>
@@ -2514,6 +2733,11 @@ function renderTxSheetBody() {
           <div class="field-label">مبلغ إضافي يُضاف للمدفوعات (لو موجود)</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-topup" value="${esc(f.fawryTopUpMadfoat ?? '')}" oninput="updateFawrySettlementPreview()">
           <div id="fs-topup-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryTopUpMadfoat ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curMadfoat, f.fawryPaidFromMadfoat, f.fawryTopUpMadfoat))}</span> ج.م` : ""}</div>
+        </div>
+        <div class="field">
+          <div class="field-label">مبلغ إضافي يُضاف لخدمات موبايل (لو موجود)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="fs-topup-khadamat" value="${esc(f.fawryTopUpKhadamat ?? '')}" oninput="updateFawrySettlementPreview()">
+          <div id="fs-topup-khadamat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.fawryTopUpKhadamat ? `رصيد خدمات موبايل هيبقى: <span class="num" style="font-weight:700;">${money(madfoatAfterSettlement(curKhadamat, f.fawryPaidFromKhadamat, f.fawryTopUpKhadamat))}</span> ج.م` : ""}</div>
         </div>
         <div id="fawry-settlement-preview" class="info-box" style="color:var(--ink-60); background:var(--paper-2);">${fawrySettlementPreviewText(f)}</div>
       `;
@@ -2549,18 +2773,42 @@ function renderTxSheetBody() {
     const debtSelMachine = state.machines.find(m => m.id === f.debtMachineId);
     const debtSubs = machineSubs(debtSelMachine);
     const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
-    let curBal = debtSubs ? machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات") : machineBalValue(live.machines?.[f.debtMachineId]);
-    if (existingTx && existingTx.category === "machineDebt" && existingTx.machineId === f.debtMachineId) {
-      curBal -= num(existingTx.amount); // رجّع تأثير المعاملة القديمة قبل المعاينة
+    if (debtSubs) {
+      // ✦ فوري: خانتين منفصلتين — مدفوعات وخدمات موبايل
+      let curMadfoat = machineBalValue(live.machines?.[f.debtMachineId], "مدفوعات");
+      let curKhadamat = machineBalValue(live.machines?.[f.debtMachineId], "خدمات موبايل");
+      if (existingTx && existingTx.category === "machineDebt" && existingTx.machineId === f.debtMachineId) {
+        curMadfoat -= num(existingTx.debtMadfoat ?? existingTx.amount ?? 0);
+        curKhadamat -= num(existingTx.debtKhadamat ?? 0);
+      }
+      html += `
+        <div class="field-row">
+          <div class="field">
+            <div class="field-label">مدفوعات (ج.م)</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-debt-madfoat" value="${esc(f.debtMadfoat ?? '')}" oninput="updateGenericHint('tx-debt-madfoat','tx-debt-madfoat-hint',${curMadfoat},1,'رصيد المدفوعات هيبقى')">
+            <div id="tx-debt-madfoat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${(f.debtMadfoat ?? '') !== '' ? `رصيد المدفوعات هيبقى: <span class="num" style="font-weight:700;">${money(curMadfoat + num(f.debtMadfoat))}</span> ج.م` : ""}</div>
+          </div>
+          <div class="field">
+            <div class="field-label">خدمات موبايل (ج.م)</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-debt-khadamat" value="${esc(f.debtKhadamat ?? '')}" oninput="updateGenericHint('tx-debt-khadamat','tx-debt-khadamat-hint',${curKhadamat},1,'رصيد خدمات موبايل هيبقى')">
+            <div id="tx-debt-khadamat-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${(f.debtKhadamat ?? '') !== '' ? `رصيد خدمات موبايل هيبقى: <span class="num" style="font-weight:700;">${money(curKhadamat + num(f.debtKhadamat))}</span> ج.م` : ""}</div>
+          </div>
+        </div>
+        <div class="info-box">إجمالي المديونية المُضافة: <span class="num" style="font-weight:700;">${money(num(f.debtMadfoat) + num(f.debtKhadamat))}</span> ج.م</div>
+      `;
+    } else {
+      let curBal = machineBalValue(live.machines?.[f.debtMachineId]);
+      if (existingTx && existingTx.category === "machineDebt" && existingTx.machineId === f.debtMachineId) {
+        curBal -= num(existingTx.amount);
+      }
+      html += `
+        <div class="field">
+          <div class="field-label">مبلغ المديونية (ج.م)</div>
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curBal},1,'رصيد المكينة هيبقى')">
+          <div id="tx-amount-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `رصيد المكينة هيبقى: <span class="num" style="font-weight:700;">${money(curBal + num(f.amount))}</span> ج.م` : ""}</div>
+        </div>
+      `;
     }
-    const balLabel = debtSubs ? "رصيد المدفوعات هيبقى" : "رصيد المكينة هيبقى";
-    html += `
-      <div class="field">
-        <div class="field-label">مبلغ المديونية (ج.م)</div>
-        <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curBal},1,'${balLabel}')">
-        <div id="tx-amount-hint" style="margin-top:6px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `${balLabel}: <span class="num" style="font-weight:700;">${money(curBal + num(f.amount))}</span> ج.م` : ""}</div>
-      </div>
-    `;
   } else if (f.category === "machineDebtPayment") {
     const live = computeLive(state.dayData);
     const existingPayment = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
@@ -2749,7 +2997,10 @@ function submitTx() {
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
-  if (f.category !== "fawrySettlement" && !(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
+  const debtSelMachineForValidation = f.category === "machineDebt" ? state.machines.find(m => m.id === f.debtMachineId) : null;
+  const isFawryDebt = f.category === "machineDebt" && machineSubs(debtSelMachineForValidation);
+  if (f.category !== "fawrySettlement" && !isFawryDebt && !(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
+  if (isFawryDebt && !(num(f.debtMadfoat) > 0 || num(f.debtKhadamat) > 0)) { alert("اكتب مبلغ في خانة المدفوعات أو خدمات موبايل على الأقل."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
   const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
   const selSubs = selMachine ? machineSubs(selMachine) : null;
@@ -2768,18 +3019,27 @@ function submitTx() {
     if (num(f.amount) - curDebt > 0.005) { alert("المبلغ المدفوع أكبر من المديونية الحالية."); return; }
   }
   let fawryDebtReduction = 0;
+  let fawryDebtReductionKhadamat = 0; // ✦ NEW
   if (f.category === "fawrySettlement") {
     if (!f.debtMachineId) { alert("اختار مكينة فوري الأول."); return; }
-    const paid = num(f.fawryPaidFromMadfoat), visa = num(f.fawryPaidFromVisa), topUp = num(f.fawryTopUpMadfoat);
-    if (paid <= 0 && visa <= 0 && topUp <= 0) { alert("اكتب على الأقل مبلغ واحد من الثلاثة."); return; }
+    const paid = num(f.fawryPaidFromMadfoat), khadamatPaid = num(f.fawryPaidFromKhadamat), visa = num(f.fawryPaidFromVisa), topUp = num(f.fawryTopUpMadfoat), khadamatTopUp = num(f.fawryTopUpKhadamat);
+    if (paid <= 0 && khadamatPaid <= 0 && visa <= 0 && topUp <= 0 && khadamatTopUp <= 0) { alert("اكتب على الأقل مبلغ واحد من الخانات."); return; }
+    const existing = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
     if (f.fawryReduceDebt !== false && paid > 0) {
       const live = computeLive(state.dayData);
       let curFawryDebt = num(live.machineDebts?.[f.debtMachineId]);
-      const existing = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
       if (existing && existing.category === "fawrySettlement" && existing.machineId === f.debtMachineId) {
         curFawryDebt += num(existing.fawryDebtReduction); // رجّع تأثير المعاملة القديمة قبل المقارنة
       }
       fawryDebtReduction = Math.min(paid, Math.max(curFawryDebt, 0));
+    }
+    if (f.fawryKhadamatReduceDebt !== false && khadamatPaid > 0) { // ✦ NEW: نفس فكرة المدفوعات بالظبط
+      const live = computeLive(state.dayData);
+      let curFawryDebtKhadamat = num(live.machineDebtSubs?.[f.debtMachineId]?.["خدمات موبايل"] ?? 0);
+      if (existing && existing.category === "fawrySettlement" && existing.machineId === f.debtMachineId) {
+        curFawryDebtKhadamat += num(existing.fawryDebtReductionKhadamat);
+      }
+      fawryDebtReductionKhadamat = Math.min(khadamatPaid, Math.max(curFawryDebtKhadamat, 0));
     }
   }
 
@@ -2794,11 +3054,17 @@ function submitTx() {
     machineSub: (f.category === "machine" && selSubs) ? f.machineSub : undefined,
     instapayAccountId: f.category === "instapay" ? (f.instapayAccountId || (state.instapayAccounts||[])[0]?.id) : undefined, // ✦ NEW
     destination: (f.category === "expense" || f.category === "cash") ? destTrimmed : undefined,
-    amount: f.category === "fawrySettlement" ? (num(f.fawryPaidFromMadfoat) + num(f.fawryPaidFromVisa) + num(f.fawryTopUpMadfoat)) : num(f.amount),
+    amount: f.category === "fawrySettlement" ? (num(f.fawryPaidFromMadfoat) + num(f.fawryPaidFromKhadamat) + num(f.fawryPaidFromVisa) + num(f.fawryTopUpMadfoat) + num(f.fawryTopUpKhadamat))
+      : (isFawryDebt ? (num(f.debtMadfoat) + num(f.debtKhadamat)) : num(f.amount)),
+    debtMadfoat: isFawryDebt ? (num(f.debtMadfoat) || 0) : undefined,   // ✦ NEW: مديونية فوري - مدفوعات
+    debtKhadamat: isFawryDebt ? (num(f.debtKhadamat) || 0) : undefined, // ✦ NEW: مديونية فوري - خدمات موبايل
     fawryPaidFromMadfoat: f.category === "fawrySettlement" ? (num(f.fawryPaidFromMadfoat) || 0) : undefined, // ✦ NEW
+    fawryPaidFromKhadamat: f.category === "fawrySettlement" ? (num(f.fawryPaidFromKhadamat) || 0) : undefined, // ✦ NEW
     fawryPaidFromVisa: f.category === "fawrySettlement" ? (num(f.fawryPaidFromVisa) || 0) : undefined,       // ✦ NEW
     fawryTopUpMadfoat: f.category === "fawrySettlement" ? (num(f.fawryTopUpMadfoat) || 0) : undefined,       // ✦ NEW
-    fawryDebtReduction: f.category === "fawrySettlement" ? fawryDebtReduction : undefined,                   // ✦ NEW: قد إيه اتسدد من مديونية فوري
+    fawryTopUpKhadamat: f.category === "fawrySettlement" ? (num(f.fawryTopUpKhadamat) || 0) : undefined,     // ✦ NEW
+    fawryDebtReduction: f.category === "fawrySettlement" ? fawryDebtReduction : undefined,                   // ✦ NEW: قد إيه اتسدد من مديونية فوري (مدفوعات)
+    fawryDebtReductionKhadamat: f.category === "fawrySettlement" ? fawryDebtReductionKhadamat : undefined,   // ✦ NEW: قد إيه اتسدد من مديونية فوري (خدمات موبايل)
     profit: (f.category === "expense" || f.category === "cash" || f.category === "machineDebt" || f.category === "machineDebtPayment" || f.category === "fawrySettlement") ? 0 : (num(f.profit) || 0),
     commission: (f.category === "vodafone" && f.subtype === "إيداع") ? (num(f.commission) || 0) : 0,  // ✦ NEW: عمولة بس في الإيداع
     note: (f.note||"").trim(),
