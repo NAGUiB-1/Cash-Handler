@@ -463,6 +463,27 @@ function fetchArchiveDay(key) {
     .then(snap => snap.exists ? snap.data() : null);
 }
 
+/* ✦ NEW: يجيب الأيام "الفاضية" المتاحة لاختيارها كتاريخ لليوم — أي يوم من آخر 30 يوم لحد النهاردة
+   ومش مسجل فيه أي بيانات فعلية (يعني مش موجود، أو موجود بحالة "لم يبدأ") */
+function fetchAvailableOpenDates() {
+  if (!db) return Promise.resolve([]);
+  const realToday = dateKey(new Date());
+  const candidates = [];
+  for (let i = 0; i < 30; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    candidates.push(dateKey(d));
+  }
+  return db.collection("days").get().then(snap => {
+    const existing = {};
+    snap.docs.forEach(doc => { existing[doc.id] = doc.data(); });
+    return candidates.filter(key => {
+      const d = existing[key];
+      return !d || d.status === "not_started";
+    }).sort((a, b) => b.localeCompare(a)); // الأحدث أولًا
+  });
+}
+
 /* ===============================================================
    Date / Format helpers
    =============================================================== */
@@ -722,6 +743,11 @@ const state = {
   /* ✦ NEW: وضع تعديل يوم من الأرشيف */
   editingArchiveDay: false,
   liveDayBackup: null, // { key, data } — نسخة من اليوم الحالي وقت الدخول لوضع تعديل الأرشيف
+  staleDayPrompt: null, // ✦ NEW: { key, realToday } — لما يوم شغل سابق يتفوّت (يفضل "لم يبدأ") ويوصل يوم تاني
+  txFilter: { category: "all", q: "" }, // ✦ NEW: فلتر سجل معاملات اليوم (نوع + بحث نصي)
+  eoAvailableDates: [], // ✦ NEW: قائمة الأيام الفاضية المتاحة لاختيارها كتاريخ في تعديل الأرصدة الافتتاحية
+  eoSelectedDate: null, // ✦ NEW: التاريخ المختار حاليًا في شاشة تعديل الأرصدة الافتتاحية
+  eoDatesLoading: false,
   balanceBreakdownMachineId: null, // ✦ NEW: لعرض تفاصيل حساب رصيد فوري (تشخيص)
   theme: "light", // ✦ NEW: "light" أو "dark"
 };
@@ -784,11 +810,26 @@ function attachRealtimeListeners() {
   resolveWorkingDayAndAttach(0);
 }
 
-/* ✦ NEW: يحدد يوم الشغل الصح (ممكن يكون يوم سابق لسه مفتوح لو الساعة عدت ١٢ بليل) قبل ما يربط الـ listener */
+/* ✦ NEW: يحدد يوم الشغل الصح (ممكن يكون يوم سابق اتنسي ومفتحش، أو الساعة عدت ١٢ بليل) قبل ما يربط الـ listener */
 function resolveWorkingDayAndAttach(retryCount) {
   fetchCurrentDayKey().then(key => {
+    const realToday = dateKey(new Date());
     if (key) {
       state.today = key;
+      // ✦ NEW: لو يوم الشغل المحفوظ مش نفس تاريخ النهاردة الفعلي، وبيانات اليوم ده لسه "لم يبدأ"
+      //   (يعني اتفوّت تمامًا ومحدش فتح التطبيق فيه) — اسأل المستخدم قبل ما نفتحه له صامت
+      if (key !== realToday) {
+        db.collection("days").doc(key).get().then(snap => {
+          const d = snap.exists ? snap.data() : emptyDay();
+          if (d.status === "not_started") {
+            state.staleDayPrompt = { key, realToday };
+          }
+          state.dayData = d; // نعرض بيانات اليوم القديم لحد ما المستخدم يقرر
+          attachDayListener(0);
+          render();
+        }).catch(() => { attachDayListener(0); });
+        return;
+      }
     } else {
       // أول مرة يفتح فيها التطبيق — سجّل يوم النهاردة كيوم الشغل الحالي
       saveCurrentDayKey(state.today);
@@ -802,6 +843,28 @@ function resolveWorkingDayAndAttach(retryCount) {
       attachDayListener(0); // كملّ بيوم النهاردة كحل احتياطي بدل ما يعلّق التطبيق
     }
   });
+}
+
+/* ✦ NEW: المستخدم اختار يفضل شغال على اليوم القديم اللي اتفوّت (مثلاً هيسجله بأثر رجعي) */
+function keepStaleDay() {
+  state.staleDayPrompt = null;
+  render();
+}
+
+/* ✦ NEW: المستخدم اختار يتخطى اليوم القديم اللي اتفوّت ويبدأ يوم الشغل بتاريخ النهاردة الفعلي */
+function skipToFreshDay() {
+  if (!requireEdit()) return;
+  const prompt = state.staleDayPrompt;
+  if (!prompt) return;
+  state.staleDayPrompt = null;
+  state.today = prompt.realToday;
+  saveCurrentDayKey(prompt.realToday);
+  state.dayReady = false;
+  state.dayData = emptyDay();
+  state.txFilter = { category: "all", q: "" };
+  switchDayListener();
+  state.tab = "today";
+  render();
 }
 
 function scheduleRetry(retryCount, fn) {
@@ -905,6 +968,8 @@ function attachWalletCommissionsListener(retryCount) {
   state.unsubscribers.push(unsub);
 }
 
+let __dayUnsub = null; // ✦ NEW: مرجع لآخر اشتراك على مستند اليوم — عشان نقدر نلغيه لما نبدّل اليوم
+
 function attachDayListener(retryCount) {
   const unsub = db.collection("days").doc(state.today).onSnapshot(snap => {
     if (state.editingArchiveDay) return; // ✦ NEW: منع الكتابة فوق بيانات الأرشيف وقت التعديل
@@ -921,7 +986,14 @@ function attachDayListener(retryCount) {
       showConnectionError();
     }
   });
+  __dayUnsub = unsub;
   state.unsubscribers.push(unsub);
+}
+
+/* ✦ NEW: يلغي اشتراك اليوم الحالي (لو موجود) قبل ما يربط اشتراك جديد — عشان مايفضلش listener شغال على يوم قديم في الخلفية */
+function switchDayListener() {
+  if (__dayUnsub) { try { __dayUnsub(); } catch (e) {} __dayUnsub = null; }
+  attachDayListener(0);
 }
 
 function checkReady() {
@@ -1285,9 +1357,39 @@ function render() {
     <div class="content">${bodyHtml}</div>
     ${renderTabBar()}
     ${state.sheet ? renderSheet() : ""}
+    ${state.staleDayPrompt ? renderStaleDayPrompt() : ""}
   `;
   refreshIcons();
   attachTodayEvents();
+}
+
+/* ✦ NEW: تنبيه واضح لما يوم شغل سابق يتفوّت (متسجلش فيه حاجة) ويوصل يوم تاني من غير ما حد يفتح التطبيق فيه */
+function renderStaleDayPrompt() {
+  const p = state.staleDayPrompt;
+  return `
+    <div class="sheet-overlay">
+      <div class="sheet-backdrop"></div>
+      <div class="sheet">
+        <div class="sheet-grip-wrap"><div class="sheet-grip"></div></div>
+        <div class="sheet-header">
+          <h3 class="sheet-title">فيه يوم لسه متسجلش</h3>
+        </div>
+        <div class="sheet-body">
+          <div class="warn-box" style="margin-bottom:16px; line-height:1.8;">
+            يوم <span style="font-weight:800;">${esc(displayDate(p.key))}</span> لم يتم تسجيل أي بيانات فيه (يبدو إنه اتفوّت). النهاردة فعليًا يوم <span style="font-weight:800;">${esc(displayDate(p.realToday))}</span>.
+            <br><br>
+            عايز تعمل إيه؟
+          </div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <button class="primary-btn" onclick="keepStaleDay()">أكمل تسجيل يوم ${esc(displayDate(p.key))}</button>
+            ${canEdit()
+              ? `<button class="action-bar-close" style="width:100%;" onclick="skipToFreshDay()">تخطّي، وابدأ يوم ${esc(displayDate(p.realToday))} بدل منه</button>`
+              : `<div class="balance-collapsed-hint">حسابك (رؤية فقط) — استنى الأدمن يقرر يبدأ يوم جديد ولا لأ</div>`}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderHeader(profit) {
@@ -1338,6 +1440,7 @@ function setTab(t) {
   if (state.editingArchiveDay && t !== "archive") { exitArchiveEditMode(); }
   state.tab = t;
   state.viewDate = null;
+  state.txFilter = { category: "all", q: "" };
   if (t === "archive") {
     state.archiveLoading = true; state.archiveError = null; render();
     fetchArchiveList().then(list => { state.archiveIndex = list; state.archiveLoading = false; render(); })
@@ -1647,9 +1750,12 @@ function renderTodayView(live) {
   }
 
   const closed = d.status === "closed";
-  const txHtml = d.transactions.length === 0
-    ? `<div class="tx-list-empty">لسه معملتش أي معاملة النهاردة</div>`
-    : [...d.transactions].reverse().map(t => renderTxRow(t, canEdit())).join("");
+  const reversedTxs = [...d.transactions].reverse();
+  const filteredTxs = filterTransactions(reversedTxs);
+  const txHtml = filteredTxs.length === 0
+    ? `<div class="tx-list-empty">${d.transactions.length === 0 ? "لسه معملتش أي معاملة النهاردة" : "مفيش نتائج مطابقة"}</div>`
+    : filteredTxs.map(t => renderTxRow(t, canEdit())).join("");
+  const filterActive = (state.txFilter && (state.txFilter.category !== "all" || state.txFilter.q));
 
   return `
     ${closed && d.closing ? renderClosedStamp(d.closing, live, d.closedBy) : ""}
@@ -1669,9 +1775,10 @@ function renderTodayView(live) {
     ${renderBalancesGrid(live)}
     <div class="tx-list-header">
       <div class="tx-list-title">معاملات اليوم</div>
-      <div class="tx-list-count">${d.transactions.length} معاملة</div>
+      <div class="tx-list-count" id="tx-list-count">${filterActive ? `${filteredTxs.length} من ${d.transactions.length}` : `${d.transactions.length} معاملة`}</div>
     </div>
-    <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
+    ${d.transactions.length > 0 ? renderTxFilterBar(d.transactions.length) : ""}
+    <div class="tx-list-box ${filteredTxs.length?'':'empty'}" id="tx-list-results">${txHtml}</div>
     ${((!closed || state.editingArchiveDay) && canEdit()) ? `
       <div class="action-bar">
         <div class="action-bar-inner">
@@ -1680,6 +1787,96 @@ function renderTodayView(live) {
         </div>
       </div>
     ` : ""}
+  `;
+}
+
+/* ===============================================================
+   ✦ NEW: فلتر سجل المعاملات (نوع المعاملة + بحث نصي)
+   =============================================================== */
+const TX_FILTER_CATEGORIES = [
+  ["all", "الكل"],
+  ["vodafone", "فودافون كاش"],
+  ["instapay", "انستاباي"],
+  ["machine", "شحن مكن"],
+  ["islam", "حساب إسلام"],
+  ["cash", "نقدية"],
+  ["expense", "خوارج"],
+  ["machineDebt", "مديونية (المكن)"],
+  ["machineDebtPayment", "سداد مديونية"],
+  ["fawrySettlement", "تسوية فوري"],
+];
+
+/* نص خام (من غير HTML) يجمع كل التفاصيل القابلة للبحث في معاملة معينة */
+function txSearchText(tx) {
+  const parts = [];
+  if (tx.category === "vodafone") parts.push("فودافون كاش", tx.subtype, state.walletNames[tx.walletId]);
+  else if (tx.category === "instapay") parts.push("انستاباي", tx.subtype, getInstapayAccountName(tx.instapayAccountId));
+  else if (tx.category === "islam") parts.push("حساب إسلام", tx.subtype);
+  else if (tx.category === "expense") parts.push("خوارج", tx.destination);
+  else if (tx.category === "cash") parts.push("نقدية", tx.destination);
+  else if (tx.category === "machineDebt" || tx.category === "machineDebtPayment" || tx.category === "fawrySettlement") {
+    const m = state.machines.find(mm => mm.id === tx.machineId);
+    parts.push(tx.category === "machineDebt" ? "مديونية" : (tx.category === "machineDebtPayment" ? "سداد مديونية" : "تسوية فوري"), m ? m.name : "");
+  } else {
+    const m = state.machines.find(mm => mm.id === tx.machineId);
+    parts.push("شحن مكن", m ? m.name : "", tx.machineSub);
+  }
+  parts.push(tx.note, tx.createdBy, tx.editedBy, String(tx.amount ?? ""));
+  return parts.filter(Boolean).join(" ").toLowerCase();
+}
+
+/* بيفلتر قائمة معاملات حسب state.txFilter (نوع + نص بحث) */
+function filterTransactions(txs) {
+  const f = state.txFilter || { category: "all", q: "" };
+  const q = (f.q || "").trim().toLowerCase();
+  return txs.filter(t => {
+    if (f.category !== "all" && t.category !== f.category) return false;
+    if (q && !txSearchText(t).includes(q)) return false;
+    return true;
+  });
+}
+
+function setTxFilterCategory(cat) {
+  state.txFilter = { ...state.txFilter, category: cat };
+  render();
+}
+function setTxFilterQuery(q) {
+  state.txFilter = { ...state.txFilter, q };
+  // ✦ تحديث خفيف بدون render كامل عشان الكيبورد ميقفلش على الموبايل
+  const box = document.getElementById("tx-list-results");
+  if (box) {
+    // لو بنعرض يوم أرشيف (مش وضع تعديل) استخدم بياناته، وإلا استخدم يوم النهاردة الحالي
+    const isArchiveView = state.tab === "archive" && state.viewDate && !state.editingArchiveDay;
+    const d = isArchiveView ? (state.archiveDayData || emptyDay()) : state.dayData;
+    const editable = isArchiveView ? false : canEdit();
+    const filtered = filterTransactions([...d.transactions].reverse());
+    box.className = `tx-list-box ${filtered.length ? '' : 'empty'}`;
+    box.innerHTML = filtered.length === 0
+      ? `<div class="tx-list-empty">${(d.transactions||[]).length === 0 ? "لسه معملتش أي معاملة النهاردة" : "مفيش نتائج مطابقة"}</div>`
+      : filtered.map(t => renderTxRow(t, editable)).join("");
+    const countEl = document.getElementById("tx-list-count");
+    if (countEl) countEl.textContent = `${filtered.length} من ${d.transactions.length}`;
+  }
+}
+function clearTxFilter() {
+  state.txFilter = { category: "all", q: "" };
+  render();
+}
+function renderTxFilterBar(totalCount) {
+  const f = state.txFilter || { category: "all", q: "" };
+  const active = f.category !== "all" || !!f.q;
+  return `
+    <div style="margin-bottom:10px;">
+      <div style="position:relative; margin-bottom:8px;">
+        <input type="text" class="input" placeholder="بحث في المعاملات..." value="${esc(f.q)}" oninput="setTxFilterQuery(this.value)" style="padding-inline-end:34px;">
+      </div>
+      <div class="chip-row wrap">
+        ${TX_FILTER_CATEGORIES.map(([k,l]) => `
+          <button class="chip-btn small ${f.category===k?'active':''}" onclick="setTxFilterCategory('${k}')">${l}</button>
+        `).join("")}
+        ${active ? `<button class="chip-btn small" style="border-style:dashed; color:var(--rust); border-color:var(--rust);" onclick="clearTxFilter()">${icon("x",{size:12,color:"var(--rust)"})} مسح الفلتر</button>` : ""}
+      </div>
+    </div>
   `;
 }
 
@@ -1824,14 +2021,31 @@ async function downloadDayPDF(dayKey, dayData) {
     const usableWidthMm = pageWidthMm - marginMm * 2;
     const usableHeightMm = pageHeightMm - marginMm * 2;
 
-    // ✦ نلف كل "صفحة" (بلوك بعرض ثابت) في عنصر منفصل ونصوّرها لوحدها لضمان نص عربي واضح وحدود صفحات نظيفة
+    // ✦ نصوّر كل "صفحة" (بلوك بعرض ثابت) كصورة واحدة طويلة، بعدين نقصّها لشرائح بارتفاع صفحة A4
+    //   ونحطّ كل شريحة في صفحة PDF منفصلة — عشان النص يفضل بحجمه الطبيعي وميتكوتشش/يتزنّق في صفحة واحدة
     const pages = wrap.querySelectorAll(".pdf-page");
+    let anyPageAdded = false;
     for (let i = 0; i < pages.length; i++) {
       const canvas = await html2canvas(pages[i], { scale: 2.2, backgroundColor: "#ffffff", useCORS: true });
-      const imgData = canvas.toDataURL("image/png");
-      const imgHeightMm = canvas.height * usableWidthMm / canvas.width;
-      if (i > 0) pdf.addPage();
-      pdf.addImage(imgData, "PNG", marginMm, marginMm, usableWidthMm, Math.min(imgHeightMm, usableHeightMm));
+      const pxPerMm = canvas.width / usableWidthMm;
+      const pageHeightPx = Math.max(1, Math.floor(usableHeightMm * pxPerMm));
+      let renderedPx = 0;
+      while (renderedPx < canvas.height) {
+        const sliceHeightPx = Math.min(pageHeightPx, canvas.height - renderedPx);
+        const sliceCanvas = document.createElement("canvas");
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = sliceHeightPx;
+        const ctx = sliceCanvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+        ctx.drawImage(canvas, 0, renderedPx, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx);
+        const sliceImgData = sliceCanvas.toDataURL("image/png");
+        const sliceHeightMm = sliceHeightPx / pxPerMm;
+        if (anyPageAdded) pdf.addPage();
+        pdf.addImage(sliceImgData, "PNG", marginMm, marginMm, usableWidthMm, sliceHeightMm);
+        anyPageAdded = true;
+        renderedPx += sliceHeightPx;
+      }
     }
     document.body.removeChild(wrap);
     pdf.save(`تقرير-${dayKey}.pdf`);
@@ -1842,22 +2056,44 @@ async function downloadDayPDF(dayKey, dayData) {
   }
 }
 
+/* ✦ NEW: توصية بحسب نوع البند اللي فيه فرق بين المتوقع والفعلي — بتساعد تعرف تدور فين على مصدر الفرق */
+function adviceForType(type, itemName) {
+  switch (type) {
+    case "drawer_cash":
+      return "اعمل عدّ للكاش في الدرج تاني بالورقة والقلم. لو الفرق لسه موجود، راجع كل معاملات (خوارج) و(نقدية) و(سحب/إيداع المحافظ) اليوم وتأكد إن كل مبلغ اتكتب صح وإنه محسوب مرة واحدة بس.";
+    case "drawer_machine":
+      return "راجع كل معاملات (شحن مكن) اليوم واحدة واحدة، وتأكد إن المبلغ اللي اتاخد فعليًا من درج المكن مطابق للمبلغ المسجل هنا. لو فيه شحن اتم على المكينة ومتسجلش هنا، ده سبب الفرق غالبًا.";
+    case "wallet":
+      return `افتح تطبيق أو رسايل "${itemName}" وقارن آخر سحب/إيداع فعلي بكشف حساب المحفظة نفسها، وقارنها بمعاملات "${itemName}" المسجلة هنا اليوم معاملة بمعاملة. تأكد كمان إن عمولة المحفظة (لو فيه) اتحسبت صح ومتسجلتش مرتين ولا اتنستيت.`;
+    case "instapay":
+      return `افتح كشف حساب "${itemName}" على تطبيق انستاباي وقارن كل عملية سحب أو إيداع فيه بالمعاملات المسجلة هنا تحت نفس الحساب، وتأكد مفيش عملية اتسجلت في المكان الغلط (حساب تاني) أو اتكررت.`;
+    case "machine":
+      return `افتح كشف حساب أو تطبيق مكينة "${itemName}" وقارنه معاملة بمعاملة مع سجل المعاملات هنا. الفرق غالبًا بيبقى بسبب شحنة اتعملت فعليًا على المكينة ومتسجلتش في التطبيق، أو العكس (اتسجلت هنا ومحصلتش فعليًا).`;
+    case "islam":
+      return "راجع كل معاملات (حساب إسلام) اليوم وقارنها بكشف حسابه الفعلي عنده، وتأكد إن كل سحب أو إيداع اتسجل بنفس المبلغ والاتجاه الصحيح.";
+    case "debt":
+      return `راجع سجل مديونية "${itemName}" (إضافة المديونية وسدادها) وتأكد إن كل عملية شحن بالدين أو سداد نقدي اتسجلت بالمبلغ الصح، وإنها مطابقة لما هو متفق عليه فعليًا مع صاحب المكينة.`;
+    default:
+      return "راجع كل المعاملات المرتبطة بهذا البند اليوم، معاملة بمعاملة، وقارنها بالواقع الفعلي لمعرفة مصدر الفرق.";
+  }
+}
+
 /* ✦ NEW: تصميم تقرير PDF منظم (جداول حقيقية) بدل صورة من واجهة التطبيق */
 function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, txs) {
   const F = "font-family:'Tajawal','Cairo',sans-serif;";
   const HEAD = "font-family:'Cairo',sans-serif;font-weight:800;";
-  const pageStyle = `${F} width:800px; box-sizing:border-box; padding:36px 40px; direction:rtl; color:#17262b; background:#ffffff;`;
+  const pageStyle = `${F} width:800px; box-sizing:border-box; padding:42px 46px; direction:rtl; color:#17262b; background:#ffffff; font-size:14px; line-height:1.6;`;
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
 
   const headerBlock = `
-    <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #17262b; padding-bottom:14px; margin-bottom:20px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #17262b; padding-bottom:18px; margin-bottom:26px;">
       <div>
-        <div style="${HEAD} font-size:22px;">دفتر المحل</div>
-        <div style="font-size:12.5px; color:#5a6b70; margin-top:2px;">تقرير يومي مفصّل</div>
+        <div style="${HEAD} font-size:26px;">دفتر المحل</div>
+        <div style="font-size:14px; color:#5a6b70; margin-top:4px;">تقرير يومي مفصّل</div>
       </div>
       <div style="text-align:left;">
-        <div style="font-size:14px; font-weight:700;">${esc(displayDate(dayKey))}</div>
-        <div style="font-size:11.5px; color:#5a6b70; margin-top:2px;">${dayData.status === "closed" ? `مقفول${dayData.closedAt ? " الساعة " + esc(dayData.closedAt) : ""}${dayData.closedBy ? " بواسطة " + esc(dayData.closedBy) : ""}` : "مفتوح"}</div>
+        <div style="font-size:16.5px; font-weight:700;">${esc(displayDate(dayKey))}</div>
+        <div style="font-size:13px; color:#5a6b70; margin-top:4px;">${dayData.status === "closed" ? `مقفول${dayData.closedAt ? " الساعة " + esc(dayData.closedAt) : ""}${dayData.closedBy ? " بواسطة " + esc(dayData.closedBy) : ""}` : "مفتوح"}</div>
       </div>
     </div>
   `;
@@ -1868,14 +2104,58 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     { label: "إجمالي العمولات", value: money(commissionTotal), color: "#ad7a26" },
   ];
   const summaryBlock = `
-    <div style="display:flex; gap:12px; margin-bottom:22px;">
+    <div style="display:flex; gap:14px; margin-bottom:28px;">
       ${summaryCards.map(c => `
-        <div style="flex:1; border:1px solid #e3ddc9; border-radius:8px; padding:12px 14px;">
-          <div style="font-size:11px; color:#5a6b70; margin-bottom:4px;">${c.label}</div>
-          <div style="font-size:17px; font-weight:700; color:${c.color};">${c.value}</div>
+        <div style="flex:1; border:1px solid #e3ddc9; border-radius:10px; padding:16px 18px;">
+          <div style="font-size:12.5px; color:#5a6b70; margin-bottom:6px;">${c.label}</div>
+          <div style="font-size:21px; font-weight:700; color:${c.color};">${c.value}</div>
         </div>
       `).join("")}
     </div>
+  `;
+
+  const tableStyle = "width:100%; border-collapse:collapse; font-size:14px;";
+  const thStyle = "background:#17262b; color:#f2ecda; text-align:right; padding:11px 14px; font-weight:700;";
+  const tdStyle = "padding:11px 14px; border-bottom:1px solid #eee4cc;";
+
+  // ✦ NEW: ملخص نشاط اليوم بالتفصيل (عدد المعاملات وإجمالي المبالغ لكل نوع)
+  const categoryLabels = {
+    vodafone: "فودافون كاش", instapay: "انستاباي", islam: "حساب إسلام", machine: "شحن مكن",
+    expense: "خوارج", cash: "نقدية", machineDebt: "مديونية (المكن)",
+    machineDebtPayment: "سداد مديونية (المكن)", fawrySettlement: "تسوية فوري",
+  };
+  const catStats = {};
+  txs.forEach(t => {
+    const key = t.category || "أخرى";
+    if (!catStats[key]) catStats[key] = { count: 0, amount: 0, profit: 0, commission: 0 };
+    catStats[key].count += 1;
+    catStats[key].amount += num(t.amount);
+    catStats[key].profit += num(t.profit);
+    catStats[key].commission += num(t.commission);
+  });
+  const activityRows = Object.keys(catStats).map(k => ({ label: categoryLabels[k] || k, ...catStats[k] }));
+  const activityBlock = activityRows.length === 0 ? "" : `
+    <div style="${HEAD} font-size:17px; margin-bottom:12px;">ملخص نشاط اليوم بالتفصيل</div>
+    <table style="${tableStyle} margin-bottom:30px;">
+      <thead><tr>
+        <th style="${thStyle}">نوع المعاملة</th>
+        <th style="${thStyle} text-align:left;">العدد</th>
+        <th style="${thStyle} text-align:left;">إجمالي المبلغ</th>
+        <th style="${thStyle} text-align:left;">إجمالي المكسب</th>
+        <th style="${thStyle} text-align:left;">إجمالي العمولة</th>
+      </tr></thead>
+      <tbody>
+        ${activityRows.map((r, i) => `
+          <tr style="${i % 2 === 1 ? 'background:#faf7ec;' : ''}">
+            <td style="${tdStyle}">${esc(r.label)}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${r.count}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${money(r.amount)}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace; color:#1f6f54;">${r.profit > 0 ? money(r.profit) : "—"}</td>
+            <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace; color:#ad7a26;">${r.commission > 0 ? money(r.commission) : "—"}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
   `;
 
   // ✦ جدول الأرصدة كجدول حقيقي (مش كروت واجهة)
@@ -1895,13 +2175,9 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     .filter(x => Math.abs(x.val) >= 0.01);
   debtRows.forEach(d => balanceRows.push([`مديونية ${d.name}`, money(d.val)]));
 
-  const tableStyle = "width:100%; border-collapse:collapse; font-size:12px;";
-  const thStyle = "background:#17262b; color:#f2ecda; text-align:right; padding:8px 10px; font-weight:700;";
-  const tdStyle = "padding:7px 10px; border-bottom:1px solid #eee4cc;";
-
   const balanceTable = `
-    <div style="${HEAD} font-size:14px; margin-bottom:8px;">الأرصدة في نهاية اليوم</div>
-    <table style="${tableStyle} margin-bottom:24px;">
+    <div style="${HEAD} font-size:17px; margin-bottom:12px;">الأرصدة في نهاية اليوم</div>
+    <table style="${tableStyle} margin-bottom:30px;">
       <thead><tr><th style="${thStyle}">البند</th><th style="${thStyle} text-align:left;">الرصيد (ج.م)</th></tr></thead>
       <tbody>
         ${balanceRows.map((r, i) => `
@@ -1914,24 +2190,33 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     </table>
   `;
 
-  // ✦ جدول تسوية الإغلاق (لو اليوم مقفول) — متوقع مقابل فعلي والفرق
+  // ✦ جدول تسوية الإغلاق (لو اليوم مقفول) — متوقع مقابل فعلي والفرق + تحليل وتوصيات لمصدر أي عجز أو زيادة
   let closingTable = "";
+  let diffAnalysisBlock = "";
   if (dayData.status === "closed" && dayData.closing) {
     const c = dayData.closing;
     const rows = [];
-    rows.push(["الدرج (كاش)", live.drawer, num(c.drawer)]);
-    rows.push(["الدرج (مكن)", live.machineDrawer, num(c.machineDrawer)]);
-    WALLET_IDS.forEach(id => rows.push([state.walletNames[id], live.wallets[id], num(c.wallets?.[id])]));
-    ipAccounts.forEach(acc => rows.push([acc.name, num(live.instapayAccounts?.[acc.id] ?? 0), num(c.instapayAccounts?.[acc.id] ?? c.instapay ?? 0)]));
+    rows.push(["الدرج (كاش)", live.drawer, num(c.drawer), "drawer_cash"]);
+    rows.push(["الدرج (مكن)", live.machineDrawer, num(c.machineDrawer), "drawer_machine"]);
+    WALLET_IDS.forEach(id => rows.push([state.walletNames[id], live.wallets[id], num(c.wallets?.[id]), "wallet"]));
+    ipAccounts.forEach(acc => rows.push([acc.name, num(live.instapayAccounts?.[acc.id] ?? 0), num(c.instapayAccounts?.[acc.id] ?? c.instapay ?? 0), "instapay"]));
     state.machines.forEach(m => {
       const subs = machineSubs(m);
-      if (subs) subs.forEach(s => rows.push([`${m.name} - ${s}`, machineBalValue(live.machines[m.id], s), machineBalValue(c.machines?.[m.id], s)]));
-      else rows.push([m.name, machineBalValue(live.machines[m.id]), machineBalValue(c.machines?.[m.id])]);
+      if (subs) subs.forEach(s => rows.push([`${m.name} - ${s}`, machineBalValue(live.machines[m.id], s), machineBalValue(c.machines?.[m.id], s), "machine"]));
+      else rows.push([m.name, machineBalValue(live.machines[m.id]), machineBalValue(c.machines?.[m.id]), "machine"]);
     });
-    rows.push(["حساب إسلام", live.islamBalance, num(c.islamBalance)]);
+    rows.push(["حساب إسلام", live.islamBalance, num(c.islamBalance), "islam"]);
+    state.machines.forEach(m => {
+      const expectedDebt = num(live.machineDebts?.[m.id]);
+      const actualDebt = num(c.machineDebts?.[m.id] ?? expectedDebt);
+      if (Math.abs(expectedDebt) >= 0.01 || Math.abs(actualDebt) >= 0.01) {
+        rows.push([`مديونية ${m.name}`, expectedDebt, actualDebt, "debt"]);
+      }
+    });
+
     closingTable = `
-      <div style="${HEAD} font-size:14px; margin-bottom:8px;">تسوية الإغلاق (المتوقع مقابل الفعلي)</div>
-      <table style="${tableStyle} margin-bottom:24px;">
+      <div style="${HEAD} font-size:17px; margin-bottom:12px;">تسوية الإغلاق (المتوقع مقابل الفعلي)</div>
+      <table style="${tableStyle} margin-bottom:30px;">
         <thead><tr>
           <th style="${thStyle}">البند</th>
           <th style="${thStyle} text-align:left;">المتوقع</th>
@@ -1953,6 +2238,42 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
           }).join("")}
         </tbody>
       </table>
+    `;
+
+    // ✦ NEW: ملخص عام للفرق + بطاقة تحليل وتوصية لكل بند فيه عجز أو زيادة
+    const problemRows = rows.filter(r => Math.abs(r[2] - r[1]) >= 0.01);
+    const totalDiff = rows.reduce((a, r) => a + (r[2] - r[1]), 0);
+    const overallOk = Math.abs(totalDiff) < 0.01;
+    const overallColor = overallOk ? "#1f6f54" : (totalDiff < 0 ? "#a13a2a" : "#ad7a26");
+    const overallLabel = overallOk ? "اليوم مطابق تمامًا — لا يوجد عجز أو زيادة" : (totalDiff < 0 ? "يوجد عجز إجمالي في اليوم" : "يوجد زيادة إجمالية في اليوم");
+
+    diffAnalysisBlock = `
+      <div style="${HEAD} font-size:17px; margin-bottom:12px;">ملخص الفروقات والتوصيات</div>
+      <div style="border:2px solid ${overallColor}; border-radius:10px; padding:16px 18px; margin-bottom:${problemRows.length ? '18px' : '30px'};">
+        <div style="font-size:13.5px; color:#5a6b70; margin-bottom:6px;">${overallLabel}</div>
+        ${overallOk ? "" : `<div style="font-size:22px; font-weight:700; color:${overallColor};">${money(Math.abs(totalDiff))} ج.م</div>`}
+      </div>
+      ${problemRows.length === 0 ? "" : `
+        <div style="font-size:13px; color:#5a6b70; margin-bottom:14px; line-height:1.7;">
+          البنود التالية فيها فرق بين المتوقع والفعلي. تحت كل بند توصية بإزاي تدوّر على مصدر الفرق ده تحديدًا.
+        </div>
+        ${problemRows.map(r => {
+          const diff = r[2] - r[1];
+          const isDeficit = diff < 0;
+          const badgeColor = isDeficit ? "#a13a2a" : "#ad7a26";
+          const badgeLabel = isDeficit ? "عجز" : "زيادة";
+          return `
+            <div style="border:1px solid #e3ddc9; border-radius:10px; padding:14px 16px; margin-bottom:12px; page-break-inside:avoid;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; gap:10px;">
+                <div style="font-weight:700; font-size:14.5px;">${esc(r[0])}</div>
+                <div style="background:${badgeColor}; color:#fff; font-size:12px; font-weight:700; padding:4px 10px; border-radius:999px; white-space:nowrap;">${badgeLabel} ${money(Math.abs(diff))} ج.م</div>
+              </div>
+              <div style="font-size:13px; color:#5a6b70; line-height:1.8;">${adviceForType(r[3], r[0])}</div>
+            </div>
+          `;
+        }).join("")}
+        <div style="height:16px;"></div>
+      `}
     `;
   }
 
@@ -1979,8 +2300,8 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     return `شحن مكن · ${esc(m?m.name:"—")}${t.machineSub ? " · " + esc(t.machineSub) : ""}`;
   };
   const txTable = `
-    <div style="${HEAD} font-size:14px; margin-bottom:8px;">سجل المعاملات (${txs.length})</div>
-    ${txs.length === 0 ? `<div style="font-size:12.5px; color:#8a8478; padding:10px 0;">لا توجد معاملات</div>` : `
+    <div style="${HEAD} font-size:17px; margin-bottom:12px;">سجل المعاملات (${txs.length})</div>
+    ${txs.length === 0 ? `<div style="font-size:14px; color:#8a8478; padding:12px 0;">لا توجد معاملات</div>` : `
     <table style="${tableStyle}">
       <thead><tr>
         <th style="${thStyle}">الوقت</th>
@@ -1993,10 +2314,10 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
         ${txs.map((t, i) => `
           <tr style="${i % 2 === 1 ? 'background:#faf7ec;' : ''}">
             <td style="${tdStyle} white-space:nowrap; direction:ltr; text-align:right; font-family:monospace;">${esc(t.time || "")}</td>
-            <td style="${tdStyle}">${txLabel(t)}${t.note ? `<div style="font-size:10.5px;color:#8a8478;">${esc(t.note)}</div>` : ""}</td>
+            <td style="${tdStyle}">${txLabel(t)}${t.note ? `<div style="font-size:12.5px;color:#8a8478; margin-top:3px;">${esc(t.note)}</div>` : ""}</td>
             <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace;">${money(num(t.amount))}</td>
             <td style="${tdStyle} text-align:left; direction:ltr; font-family:monospace; color:#1f6f54;">${num(t.profit) > 0 ? money(num(t.profit)) : "—"}</td>
-            <td style="${tdStyle} font-size:11px; color:#5a6b70;">${esc(t.createdBy || "—")}</td>
+            <td style="${tdStyle} font-size:12.5px; color:#5a6b70;">${esc(t.createdBy || "—")}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -2005,17 +2326,19 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
   `;
 
   const footer = `
-    <div style="margin-top:26px; padding-top:12px; border-top:1px solid #e3ddc9; font-size:10px; color:#8a8478; text-align:center;">
+    <div style="margin-top:30px; padding-top:14px; border-top:1px solid #e3ddc9; font-size:11.5px; color:#8a8478; text-align:center;">
       تم إنشاء هذا التقرير تلقائيًا من دفتر المحل
     </div>
   `;
 
-  // ✦ نلف المحتوى في صفحة واحدة طويلة؛ html2canvas هيصوّرها وهنقسمها لصفحات A4 لاحقًا بمنطق بسيط (صفحة واحدة كافية غالبًا، والامتداد بيتقطع تلقائيًا لو طويل)
+  // ✦ نلف المحتوى في بلوك واحد طويل؛ html2canvas هيصوّرها بالكامل وبعدين بنقصّها لصفحات A4 متعددة لو طالت (شوف downloadDayPDF)
   return `<div class="pdf-page" style="${pageStyle}">
     ${headerBlock}
     ${summaryBlock}
+    ${activityBlock}
     ${balanceTable}
     ${closingTable}
+    ${diffAnalysisBlock}
     ${txTable}
     ${footer}
   </div>`;
@@ -2050,7 +2373,7 @@ function confirmStartNewDay() {
     state.today = nextKey;
     saveCurrentDayKey(nextKey);
     state.dayReady = false;
-    attachDayListener(0);
+    switchDayListener();
     state.dayData = emptyDay();
     persistDay(state.today, state.dayData);
     state.tab = "today"; state.sheet = null;
@@ -2197,6 +2520,7 @@ function submitStartDay() {
   state.dayData = nd;
   persistDay(state.today, nd);
   state.sheet = null;
+  state.txFilter = { category: "all", q: "" };
   render();
 }
 
@@ -2206,15 +2530,62 @@ function submitStartDay() {
 function openEditOpeningSheet() {
   if (!requireEdit()) return;
   if (state.dayData.status === "not_started") { alert("لسه اليوم مبدأش."); return; }
-  state.sheet = "editOpening"; render();
+  state.eoSelectedDate = state.today;
+  state.eoAvailableDates = [];
+  state.eoDatesLoading = true;
+  state.sheet = "editOpening";
+  render();
+  fetchAvailableOpenDates().then(dates => {
+    // ✦ ضمّن التاريخ الحالي لليوم ضمن الخيارات حتى لو مش "فاضي" (عشان يفضل ظاهر كخيار افتراضي)
+    const list = dates.includes(state.today) ? dates : [state.today, ...dates];
+    state.eoAvailableDates = list.sort((a, b) => b.localeCompare(a));
+    state.eoDatesLoading = false;
+    if (state.sheet === "editOpening") { refreshEditOpeningSheetOnly(); }
+  }).catch(err => {
+    console.error("fetchAvailableOpenDates failed", err);
+    state.eoAvailableDates = [state.today];
+    state.eoDatesLoading = false;
+    if (state.sheet === "editOpening") refreshEditOpeningSheetOnly();
+  });
+}
+
+/* ✦ NEW: تحديث خفيف لجسم شيت تعديل الافتتاحية بعد وصول قائمة التواريخ، من غير إعادة رسم كل التطبيق */
+function refreshEditOpeningSheetOnly() {
+  const bodyEl = document.getElementById("sheet-body");
+  if (bodyEl) { bodyEl.innerHTML = renderEditOpeningSheet(); refreshIcons(); }
+}
+
+/* ✦ NEW: لما المستخدم يغيّر التاريخ المختار في شيت تعديل الافتتاحية */
+function onEoDateChange(val) {
+  state.eoSelectedDate = val;
+  refreshEditOpeningSheetOnly();
 }
 
 function renderEditOpeningSheet() {
   const o = state.dayData.opening || emptyOpening();
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const selectedDate = state.eoSelectedDate || state.today;
+  const dateOptionsHtml = state.eoDatesLoading
+    ? `<div style="font-size:12.5px;color:var(--ink-40);padding:8px 0;">جاري تحميل الأيام المتاحة...</div>`
+    : `
+      <select class="input" id="eo-date-select" onchange="onEoDateChange(this.value)">
+        ${state.eoAvailableDates.map(k => `
+          <option value="${k}" ${k === selectedDate ? "selected" : ""}>${esc(displayDate(k))}${k === state.today ? " (التاريخ الحالي لليوم)" : ""}</option>
+        `).join("")}
+      </select>
+      ${selectedDate !== state.today ? `
+        <div class="warn-box" style="margin-top:8px; color:var(--steel); background:var(--paper-2);">
+          هيتم تحويل يوم الشغل الحالي بالكامل لتاريخ ${esc(displayDate(selectedDate))} — يعني هيبدأ ويتقفل بيه فعليًا بدل التاريخ الحالي.
+        </div>
+      ` : ""}
+    `;
   return `
     <div class="warn-box" style="color:var(--ink-60); background:var(--paper-2);">
       تعديل الأرصدة الافتتاحية هيأثر على كل الأرصدة الحالية والفروقات المحسوبة النهاردة.
+    </div>
+    <div class="field">
+      <div class="field-label">تاريخ اليوم</div>
+      ${dateOptionsHtml}
     </div>
     <div class="field-row">
       <div class="field"><div class="field-label">الدرج (كاش)</div><input type="number" inputmode="decimal" class="input" value="${o.drawer || ''}" id="eo-drawer"></div>
@@ -2310,6 +2681,30 @@ function submitEditOpening() {
     })),
     islamBalance: num(document.getElementById("eo-islam").value),
   };
+
+  const newDate = state.eoSelectedDate || state.today;
+  const oldDate = state.today;
+
+  if (newDate !== oldDate) {
+    // ✦ NEW: المستخدم غيّر تاريخ اليوم — انقل يوم الشغل بالكامل للتاريخ الجديد
+    if (!confirm(`هيتم نقل يوم الشغل بالكامل لتاريخ ${displayDate(newDate)} بدل ${displayDate(oldDate)}. متأكد؟`)) return;
+    const newDayData = { ...state.dayData, opening };
+    persistDay(newDate, newDayData);
+    // لو اليوم القديم كان لسه فاضي (لم يبدأ)، امسحه عشان منسيبش مستند يتيم في الأرشيف
+    if (state.dayData.status === "not_started" && db) {
+      db.collection("days").doc(oldDate).delete().catch(err => console.warn("cleanup old empty day failed", err));
+    }
+    state.today = newDate;
+    saveCurrentDayKey(newDate);
+    state.dayData = newDayData;
+    state.dayReady = false;
+    switchDayListener();
+    state.eoSelectedDate = null;
+    state.sheet = null;
+    render();
+    return;
+  }
+
   state.dayData = { ...state.dayData, opening };
   persistDay(state.today, state.dayData);
   state.sheet = null;
@@ -3214,7 +3609,7 @@ function submitCloseDay() {
       state.today = nextKey;
       saveCurrentDayKey(nextKey);
       state.dayReady = false;
-      attachDayListener(0);
+      switchDayListener();
     }
   }
   render();
@@ -3294,7 +3689,7 @@ function saveInstapayName(id) {
 /* ===============================================================
    Sheet dispatcher
    =============================================================== */
-function closeSheet() { state.sheet = null; state.txForm = null; render(); }
+function closeSheet() { state.sheet = null; state.txForm = null; state.eoSelectedDate = null; render(); }
 
 function renderSheet() {
   let title, body, footer;
@@ -3370,7 +3765,7 @@ function renderArchiveView() {
 }
 
 function openArchiveDay(d) {
-  state.viewDate = d; state.archiveDayData = null; state.archiveDetailError = null; render();
+  state.viewDate = d; state.archiveDayData = null; state.archiveDetailError = null; state.txFilter = { category: "all", q: "" }; render();
   fetchArchiveDay(d).then(data => { state.archiveDayData = data || emptyDay(); render(); })
     .catch(err => { state.archiveDetailError = `تعذر تحميل بيانات اليوم: ${err.code || ""} ${err.message || err}`; render(); });
 }
@@ -3439,9 +3834,12 @@ function renderArchiveDetail() {
 
   const live = computeLive(d);
   const profitTotal = (d.transactions||[]).reduce((a,t)=>a+num(t.profit),0);
-  const txHtml = d.transactions.length === 0
-    ? `<div class="tx-list-empty">لا توجد معاملات</div>`
-    : [...d.transactions].reverse().map(t => renderTxRow(t, false)).join("");
+  const reversedTxs = [...d.transactions].reverse();
+  const filteredTxs = filterTransactions(reversedTxs);
+  const filterActive = (state.txFilter && (state.txFilter.category !== "all" || state.txFilter.q));
+  const txHtml = filteredTxs.length === 0
+    ? `<div class="tx-list-empty">${d.transactions.length === 0 ? "لا توجد معاملات" : "مفيش نتائج مطابقة"}</div>`
+    : filteredTxs.map(t => renderTxRow(t, false)).join("");
   return `
     <button class="archive-back-btn" onclick="backToArchiveList()">${icon("chevron-right",{size:16})} رجوع للأرشيف</button>
     <div class="archive-detail-title">${displayDate(state.viewDate)}</div>
@@ -3458,13 +3856,17 @@ function renderArchiveDetail() {
       ` : ""}
     </div>
     ${renderBalancesGrid(live)}
-    <div class="section-title">المعاملات</div>
-    <div class="tx-list-box ${d.transactions.length?'':'empty'}">${txHtml}</div>
+    <div class="tx-list-header">
+      <div class="section-title" style="margin:0;">المعاملات</div>
+      <div class="tx-list-count" id="tx-list-count">${filterActive ? `${filteredTxs.length} من ${d.transactions.length}` : `${d.transactions.length} معاملة`}</div>
+    </div>
+    ${d.transactions.length > 0 ? renderTxFilterBar(d.transactions.length) : ""}
+    <div class="tx-list-box ${filteredTxs.length?'':'empty'}" id="tx-list-results">${txHtml}</div>
   `;
 }
 function backToArchiveList() {
   if (state.editingArchiveDay) { exitArchiveEditMode(); }
-  state.viewDate = null; state.archiveDayData = null; render();
+  state.viewDate = null; state.archiveDayData = null; state.txFilter = { category: "all", q: "" }; render();
 }
 
 /* ===============================================================
