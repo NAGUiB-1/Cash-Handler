@@ -748,6 +748,7 @@ const state = {
   eoAvailableDates: [], // ✦ NEW: قائمة الأيام الفاضية المتاحة لاختيارها كتاريخ في تعديل الأرصدة الافتتاحية
   eoSelectedDate: null, // ✦ NEW: التاريخ المختار حاليًا في شاشة تعديل الأرصدة الافتتاحية
   eoDatesLoading: false,
+  archiveDateEdit: null, // ✦ NEW: { availableDates, loading, selected } — حالة شيت تعديل تاريخ يوم أرشيف
   balanceBreakdownMachineId: null, // ✦ NEW: لعرض تفاصيل حساب رصيد فوري (تشخيص)
   theme: "light", // ✦ NEW: "light" أو "dark"
 };
@@ -3689,7 +3690,7 @@ function saveInstapayName(id) {
 /* ===============================================================
    Sheet dispatcher
    =============================================================== */
-function closeSheet() { state.sheet = null; state.txForm = null; state.eoSelectedDate = null; render(); }
+function closeSheet() { state.sheet = null; state.txForm = null; state.eoSelectedDate = null; state.archiveDateEdit = null; render(); }
 
 function renderSheet() {
   let title, body, footer;
@@ -3712,6 +3713,9 @@ function renderSheet() {
   } else if (state.sheet === "editOpening") {
     title = "تعديل الأرصدة الافتتاحية"; body = renderEditOpeningSheet();
     footer = `<button class="primary-btn" onclick="submitEditOpening()">حفظ التعديل</button>`;
+  } else if (state.sheet === "archiveDateEdit") {  // ✦ NEW
+    title = "تعديل تاريخ اليوم"; body = renderArchiveDateEditSheetBody();
+    footer = `<button class="primary-btn" onclick="submitArchiveDateEdit()">حفظ التاريخ الجديد</button>`;
   } else if (state.sheet === "addUser") {
     title = "إضافة مستخدم جديد"; body = renderAddUserSheetBody();
     const valid = state.newUserForm && (state.newUserForm.username||"").trim() && (state.newUserForm.password||"").length >= 6;
@@ -3812,6 +3816,127 @@ function exitArchiveEditMode() {
   });
 }
 
+/* ✦ NEW: فتح شيت اختيار تاريخ جديد ليوم أرشيف معيّن */
+function openArchiveDateEditSheet() {
+  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يعدّل تاريخ أيام الأرشيف."); return; }
+  if (!state.archiveDayData) return;
+  state.archiveDateEdit = { availableDates: [], loading: true, selected: state.viewDate };
+  state.sheet = "archiveDateEdit";
+  render();
+  fetchAvailableOpenDates().then(dates => {
+    const realToday = dateKey(new Date());
+    // ✦ ضمّن خيار "النهاردة" دايمًا حتى لو مشغولة فعليًا (هنتعامل مع التعارض وقت التأكيد)
+    const list = dates.includes(realToday) ? dates : [realToday, ...dates];
+    if (!list.includes(state.viewDate)) list.push(state.viewDate); // اليوم الحالي بتاع الأرشيف نفسه يفضل خيار متاح
+    state.archiveDateEdit = { availableDates: [...new Set(list)].sort((a,b)=>b.localeCompare(a)), loading: false, selected: state.viewDate };
+    if (state.sheet === "archiveDateEdit") refreshArchiveDateEditSheetOnly();
+  }).catch(err => {
+    console.error("fetchAvailableOpenDates failed", err);
+    state.archiveDateEdit = { availableDates: [state.viewDate], loading: false, selected: state.viewDate };
+    if (state.sheet === "archiveDateEdit") refreshArchiveDateEditSheetOnly();
+  });
+}
+
+function refreshArchiveDateEditSheetOnly() {
+  const bodyEl = document.getElementById("sheet-body");
+  if (bodyEl) { bodyEl.innerHTML = renderArchiveDateEditSheetBody(); refreshIcons(); }
+}
+
+function onArchiveDateEditChange(val) {
+  if (!state.archiveDateEdit) return;
+  state.archiveDateEdit.selected = val;
+  refreshArchiveDateEditSheetOnly();
+}
+
+function renderArchiveDateEditSheetBody() {
+  const ed = state.archiveDateEdit;
+  if (!ed) return "";
+  const realToday = dateKey(new Date());
+  const selected = ed.selected || state.viewDate;
+  const isToday = selected === realToday;
+  return `
+    <div class="warn-box" style="color:var(--ink-60); background:var(--paper-2); margin-bottom:14px;">
+      اختار التاريخ الجديد ليوم <span style="font-weight:800;">${esc(displayDate(state.viewDate))}</span>. القايمة بتعرض بس الأيام اللي مش مسجّل فيها بيانات حاليًا.
+    </div>
+    ${ed.loading ? `<div style="font-size:12.5px;color:var(--ink-40);padding:8px 0;">جاري تحميل الأيام المتاحة...</div>` : `
+      <div class="field">
+        <div class="field-label">التاريخ الجديد</div>
+        <select class="input" id="archive-date-edit-select" onchange="onArchiveDateEditChange(this.value)">
+          ${ed.availableDates.map(k => `
+            <option value="${k}" ${k === selected ? "selected" : ""}>${esc(displayDate(k))}${k === realToday ? " (النهاردة)" : ""}${k === state.viewDate ? " (التاريخ الحالي لليوم)" : ""}</option>
+          `).join("")}
+        </select>
+      </div>
+      ${isToday ? `
+        <div class="warn-box" style="margin-top:8px; color:var(--rust); background:var(--paper-2);">
+          لو النهاردة فيها يوم شغل مفتوح بالفعل وفيه معاملات، هيتم استبداله بيوم ${esc(displayDate(state.viewDate))} ده، وهينتقل ليكون هو يوم الشغل الحالي على الصفحة الرئيسية. هيطلب منك تأكيد قبل التنفيذ.
+        </div>
+      ` : `
+        <div class="warn-box" style="margin-top:8px; color:var(--steel); background:var(--paper-2);">
+          هيتم نقل بيانات يوم ${esc(displayDate(state.viewDate))} بالكامل لتاريخ ${esc(displayDate(selected))} في الأرشيف.
+        </div>
+      `}
+    `}
+  `;
+}
+
+/* ✦ NEW: تنفيذ تغيير تاريخ يوم أرشيف — بيتعامل مع حالتين: نقل لتاريخ أرشيف تاني، أو نقل لتاريخ النهاردة (وربما استبدال يوم مفتوح) */
+function submitArchiveDateEdit() {
+  if (!isAdmin()) return;
+  const ed = state.archiveDateEdit;
+  if (!ed) return;
+  const oldKey = state.viewDate;
+  const newKey = ed.selected || oldKey;
+  const dayPayload = state.archiveDayData;
+  if (!dayPayload) return;
+  if (newKey === oldKey) { state.sheet = null; state.archiveDateEdit = null; render(); return; }
+  const realToday = dateKey(new Date());
+
+  if (newKey === realToday) {
+    // ✦ الحالة الخاصة: المستخدم عايز يوم الأرشيف ده يبقى هو "النهاردة" ويتنقل للصفحة الرئيسية
+    db.collection("days").doc(realToday).get().then(snap => {
+      const currentTodayData = snap.exists ? snap.data() : emptyDay();
+      const hasRealData = currentTodayData.status !== "not_started";
+      const msg = hasRealData
+        ? `فيه يوم شغل مفتوح بالفعل بتاريخ النهاردة (${displayDate(realToday)}) وفيه بيانات مسجّلة. هيتم حذفه نهائيًا واستبداله ببيانات يوم ${displayDate(oldKey)}. متأكد؟`
+        : `هيتم نقل يوم ${displayDate(oldKey)} ليبقى هو يوم الشغل الحالي بتاريخ النهاردة (${displayDate(realToday)}). متأكد؟`;
+      if (!confirm(msg)) return;
+
+      const movedData = { ...dayPayload };
+      persistDay(realToday, movedData);
+      db.collection("days").doc(oldKey).delete().catch(err => console.warn("cleanup old archive day failed", err));
+      saveCurrentDayKey(realToday);
+      state.today = realToday;
+      state.dayData = movedData;
+      state.dayReady = false;
+      switchDayListener();
+      state.sheet = null;
+      state.archiveDateEdit = null;
+      state.viewDate = null;
+      state.archiveDayData = null;
+      state.tab = "today"; // ✦ نقل فعلي من الأرشيف للصفحة الرئيسية
+      render();
+    }).catch(err => alert("تعذر التحقق من يوم النهاردة: " + (err.message || err)));
+    return;
+  }
+
+  // ✦ نقل عادي بين تاريخين في الأرشيف (مش النهاردة)
+  db.collection("days").doc(newKey).get().then(snap => {
+    const existing = snap.exists ? snap.data() : null;
+    if (existing && existing.status !== "not_started") {
+      alert(`يوم ${displayDate(newKey)} فيه بيانات مسجّلة بالفعل، اختار تاريخ تاني.`);
+      return;
+    }
+    if (!confirm(`هيتم نقل بيانات يوم ${displayDate(oldKey)} لتاريخ ${displayDate(newKey)}. متأكد؟`)) return;
+    persistDay(newKey, dayPayload);
+    db.collection("days").doc(oldKey).delete().catch(err => console.warn("cleanup old archive day failed", err));
+    state.sheet = null;
+    state.archiveDateEdit = null;
+    // ✦ افتح نفس اليوم لكن بمفتاحه الجديد
+    openArchiveDay(newKey);
+  }).catch(err => alert("تعذر نقل اليوم: " + (err.message || err)));
+}
+
 function renderArchiveDetail() {
   const d = state.archiveDayData;
   if (state.archiveDetailError) return `
@@ -3855,6 +3980,11 @@ function renderArchiveDetail() {
         <button class="action-bar-close" style="flex:1;" onclick="enterArchiveEditMode()">${icon("pencil",{size:15})} تعديل هذا اليوم</button>
       ` : ""}
     </div>
+    ${isAdmin() ? `
+      <button class="chip-btn small" style="width:100%; margin-bottom:16px; justify-content:center; display:flex; align-items:center; gap:6px;" onclick="openArchiveDateEditSheet()">
+        ${icon("archive",{size:14})} تعديل تاريخ اليوم
+      </button>
+    ` : ""}
     ${renderBalancesGrid(live)}
     <div class="tx-list-header">
       <div class="section-title" style="margin:0;">المعاملات</div>
