@@ -370,12 +370,36 @@
     .balance-card-value { font-size: 15.5px; }
     .action-bar-add, .action-bar-close { font-size: 13.5px; padding-left: 10px; padding-right: 10px; }
   }
+
+  /* ✦ NEW: رسالة تحديث التطبيق الإجبارية */
+  .update-overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(10,14,16,0.75);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .update-card {
+    background: var(--surface); border-radius: 20px; padding: 30px 22px 24px; max-width: 340px; width: 100%;
+    text-align: center; box-shadow: 0 12px 44px rgba(0,0,0,0.45); border: 1px solid var(--ink-10);
+  }
+  .update-card-icon {
+    width: 58px; height: 58px; border-radius: 16px; background: var(--ink); margin: 0 auto 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .update-card-title { font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 17px; color: var(--ink); margin-bottom: 8px; }
+  .update-card-desc { font-size: 13.5px; color: var(--ink-60); margin-bottom: 22px; line-height: 1.7; }
 </style>
 </head>
 <body>
 <div id="shell"></div>
 
 <script>
+/* ===============================================================
+   ✦ NEW: رقم إصدار التطبيق — غيّره في كل مرة تعمل فيها push للكود على GitHub
+   عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
+   القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
+   =============================================================== */
+const APP_VERSION = "2026-07-18-01";
+
 /* ===============================================================
    Firebase Config
    =============================================================== */
@@ -587,6 +611,8 @@ function computeLive(dayData){
       if (t.subtype === "إيداع") {
         drawer += (amt + p);
         instapayAccounts[accId] = (instapayAccounts[accId] || 0) - amt;
+        // ✦ عمولة انستاباي: تتخصم من رصيد الحساب
+        if (comm > 0) instapayAccounts[accId] = (instapayAccounts[accId] || 0) - comm;
         instapay -= amt; // legacy compat
       }
     } else if (t.category === "islam") {
@@ -2902,6 +2928,21 @@ function updateWalletHint(curWallet) {
   out.innerHTML = `رصيد ${esc(state.walletNames[f.walletId])} هيبقى: <span class="num" style="font-weight:700;">${money(result)}</span> ج.م`;
 }
 
+/* ✦ انستاباي: تحديث رصيد الحساب اللحظي في الإيداع (بيراعي المبلغ والعمولة سوا) */
+function updateInstapayHint(curIp) {
+  const f = state.txForm;
+  const amtEl = document.getElementById("tx-amount");
+  const commEl = document.getElementById("tx-commission");
+  const out = document.getElementById("tx-amount-hint");
+  if (!out) return;
+  const amtVal = amtEl ? amtEl.value : "";
+  const commVal = commEl ? commEl.value : "";
+  if (amtVal === "" && commVal === "") { out.innerHTML = ""; return; }
+  const accName = getInstapayAccountName(f.instapayAccountId || (state.instapayAccounts||[])[0]?.id);
+  const result = curIp - num(amtVal) - num(commVal);
+  out.innerHTML = `رصيد ${esc(accName)} هيبقى: <span class="num" style="font-weight:700;">${money(result)}</span> ج.م`;
+}
+
 function syncTxFormFromInputs() {
   const get = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
   if (get("tx-amount") !== undefined) state.txForm.amount = get("tx-amount");
@@ -3220,8 +3261,7 @@ function renderTxSheetBody() {
   } else if (f.category === "vodafone") {
     /* ✦ فودافون: المبلغ + المكسب + عمولة المحفظة (عمولة تظهر بس في الإيداع) */
     const isDeposit = f.subtype === "إيداع";
-    const defaultComm = num(state.walletCommissions?.[f.walletId] || 0);
-    const commVal = f.commission !== "" ? f.commission : (defaultComm > 0 ? defaultComm : "");
+    const commVal = f.commission ?? "";
     const live = computeLive(state.dayData);
     const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
     let curWallet = num(live.wallets?.[f.walletId]);
@@ -3246,7 +3286,6 @@ function renderTxSheetBody() {
             <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(commVal)}" oninput="updateWalletHint(${curWallet})">
           </div>
         </div>
-        ${defaultComm > 0 ? `<div class="info-box" style="margin-top:-8px;">العمولة الافتراضية لهذه المحفظة: <span class="num" style="font-weight:700;">${money(defaultComm)}</span> ج.م</div>` : ""}
         <div id="tx-wallet-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${(f.amount !== "" || commVal !== "") ? `رصيد ${esc(state.walletNames[f.walletId])} هيبقى: <span class="num" style="font-weight:700;">${money(curWallet - num(f.amount) - num(commVal))}</span> ج.م` : ""}</div>
       `;
     } else {
@@ -3270,23 +3309,46 @@ function renderTxSheetBody() {
     const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
     let curIp = num(live.instapayAccounts?.[ipAccountId]);
     if (existingTx && existingTx.category === "instapay" && (existingTx.instapayAccountId || (state.instapayAccounts||[])[0]?.id) === ipAccountId) {
-      curIp -= (existingTx.subtype === "سحب" ? num(existingTx.amount) : -num(existingTx.amount)); // رجّع تأثير المعاملة القديمة
+      // رجّع تأثير المعاملة القديمة قبل المعاينة
+      if (existingTx.subtype === "سحب") curIp -= num(existingTx.amount);
+      else curIp += (num(existingTx.amount) + num(existingTx.commission || 0));
     }
-    const sign = f.subtype === "سحب" ? 1 : -1;
+    const isDeposit = f.subtype === "إيداع";
     const accName = getInstapayAccountName(ipAccountId);
-    html += `
-      <div class="field-row">
-        <div class="field">
-          <div class="field-label">المبلغ (ج.م)</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curIp},${sign},'رصيد ${esc(accName).replace(/'/g,"\\'")} هيبقى')">
+    if (isDeposit) {
+      /* ✦ NEW: عمولة انستاباي — بتظهر في الإيداع بس، وبتتخصم من رصيد الحساب زي عمولة المحفظة بالظبط */
+      html += `
+        <div class="field-3col" style="margin-bottom:14px;">
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label">المبلغ (ج.م)</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateInstapayHint(${curIp})">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label">المكسب / النسبة</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <div class="field-label">عمولة انستاباي</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-commission" value="${esc(f.commission)}" oninput="updateInstapayHint(${curIp})">
+          </div>
         </div>
-        <div class="field">
-          <div class="field-label">المكسب / النسبة</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+        <div id="tx-amount-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${(f.amount !== "" || f.commission !== "") ? `رصيد ${esc(accName)} هيبقى: <span class="num" style="font-weight:700;">${money(curIp - num(f.amount) - num(f.commission))}</span> ج.م` : ""}</div>
+      `;
+    } else {
+      html += `
+        <div class="field-row">
+          <div class="field">
+            <div class="field-label">المبلغ (ج.م)</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-amount" value="${esc(f.amount)}" oninput="updateGenericHint('tx-amount','tx-amount-hint',${curIp},1,'رصيد ${esc(accName).replace(/'/g,"\\'")} هيبقى')">
+          </div>
+          <div class="field">
+            <div class="field-label">المكسب / النسبة</div>
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="tx-profit" value="${esc(f.profit)}">
+          </div>
         </div>
-      </div>
-      <div id="tx-amount-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `رصيد ${esc(accName)} هيبقى: <span class="num" style="font-weight:700;">${money(curIp + sign*num(f.amount))}</span> ج.م` : ""}</div>
-    `;
+        <div id="tx-amount-hint" style="margin:-8px 2px 14px; font-size:12.5px; color:var(--ink-60);">${f.amount !== "" ? `رصيد ${esc(accName)} هيبقى: <span class="num" style="font-weight:700;">${money(curIp + num(f.amount))}</span> ج.م` : ""}</div>
+      `;
+    }
   } else if (f.category === "islam") {
     const live = computeLive(state.dayData);
     const existingTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
@@ -3462,7 +3524,7 @@ function submitTx() {
     fawryDebtReduction: f.category === "fawrySettlement" ? fawryDebtReduction : undefined,                   // ✦ NEW: قد إيه اتسدد من مديونية فوري (مدفوعات)
     fawryDebtReductionKhadamat: f.category === "fawrySettlement" ? fawryDebtReductionKhadamat : undefined,   // ✦ NEW: قد إيه اتسدد من مديونية فوري (خدمات موبايل)
     profit: (f.category === "expense" || f.category === "cash" || f.category === "machineDebt" || f.category === "machineDebtPayment" || f.category === "fawrySettlement") ? 0 : (num(f.profit) || 0),
-    commission: (f.category === "vodafone" && f.subtype === "إيداع") ? (num(f.commission) || 0) : 0,  // ✦ NEW: عمولة بس في الإيداع
+    commission: ((f.category === "vodafone" || f.category === "instapay") && f.subtype === "إيداع") ? (num(f.commission) || 0) : 0,  // ✦ NEW: عمولة بس في الإيداع (فودافون كاش / انستاباي)
     note: (f.note||"").trim(),
     createdBy: oldTx?.createdBy || currentUsername,
     editedBy: oldTx ? currentUsername : undefined,
@@ -4129,36 +4191,6 @@ function renderServicesView() {
       }).join("")}
     </div>
 
-    <!-- ✦ NEW: عمولة المحافظ -->
-    <div class="archive-title">عمولة المحافظ الافتراضية</div>
-    <div class="info-box">العمولة دي بتتضاف تلقائيًا في خانة "عمولة المحفظة" لما تختار المحفظة في المعاملة، وبتتخصم من رصيد المحفظة في السحب والإيداع.</div>
-    <div class="services-list" style="margin-bottom:20px;">
-      ${WALLET_IDS.map(id => {
-        const comm = num(state.walletCommissions?.[id]);
-        const editing = state.editingWalletCommissionId === id;
-        return `
-        <div class="services-row" style="align-items:center; flex-wrap:wrap; row-gap:8px;">
-          ${icon("wallet",{size:16,color:"var(--ink-60)"})}
-          <div style="flex:1; min-width:130px;">
-            <div class="services-row-name">${esc(state.walletNames[id])}</div>
-            <div style="font-size:11.5px; color:var(--gold); margin-top:2px; font-weight:600;">
-              عمولة افتراضية: <span class="num">${money(comm)}</span> ج.م
-            </div>
-          </div>
-          ${editing ? `
-            <input type="number" inputmode="decimal" class="services-row-input" style="width:110px;"
-              placeholder="0" id="wc-input-${id}" value="${comm || ''}" autofocus
-              onkeydown="if(event.key==='Enter'){saveWalletCommission('${id}');}">
-            <button class="chip-btn small" style="flex:none; background:var(--ink); color:var(--paper); border-color:var(--ink);" onclick="saveWalletCommission('${id}')">حفظ</button>
-          ` : `
-            <div class="num" style="font-weight:700; font-size:13.5px; color:var(--gold);">${money(comm)}</div>
-            ${editable ? `<button class="icon-btn" onclick="startEditWalletCommission('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>` : ""}
-          `}
-        </div>
-      `;
-      }).join("")}
-    </div>
-
     <!-- مكن الشحن -->
     <div class="services-header-row">
       <div class="archive-title" style="margin-bottom:0;">مكن الشحن</div>
@@ -4225,16 +4257,6 @@ function saveWalletLimitUsed(id) {
   state.walletLimits = { ...state.walletLimits, [id]: used };
   saveWalletLimits(state.walletLimits);
   state.editingWalletLimitId = null; render();
-}
-/* ✦ NEW: عمولة المحفظة */
-function startEditWalletCommission(id) { if (!requireEdit()) return; state.editingWalletCommissionId = id; render(); }
-function saveWalletCommission(id) {
-  if (!requireEdit()) { state.editingWalletCommissionId = null; render(); return; }
-  const el = document.getElementById("wc-input-" + id);
-  const comm = el ? num(el.value) : num(state.walletCommissions?.[id]);
-  state.walletCommissions = { ...state.walletCommissions, [id]: comm };
-  saveWalletCommissions(state.walletCommissions);
-  state.editingWalletCommissionId = null; render();
 }
 function confirmDeleteMachine(id, name) {
   if (!requireEdit()) return;
@@ -4306,6 +4328,61 @@ function setupPWA() {
   }
 }
 setupPWA();
+
+/* ===============================================================
+   ✦ NEW: فحص وجود تحديث جديد للتطبيق
+   بيقارن APP_VERSION المحلي بالنسخة المنشورة فعليًا على السيرفر (GitHub/الاستضافة)،
+   ولو فيه فرق بيظهر رسالة إجبارية في نص الشاشة تطلب من المستخدم يعمل تحديث.
+   =============================================================== */
+let __updateCheckInFlight = false;
+
+function showUpdateOverlay() {
+  if (document.getElementById("update-overlay")) return; // ظاهرة بالفعل
+  const el = document.createElement("div");
+  el.id = "update-overlay";
+  el.className = "update-overlay";
+  el.innerHTML = `
+    <div class="update-card">
+      <div class="update-card-icon">${icon("rotate-ccw", {size:26, color:"var(--paper)"})}</div>
+      <div class="update-card-title">تم إضافة تحديث للتطبيق</div>
+      <div class="update-card-desc">فيه نسخة جديدة من التطبيق. برجاء الضغط على "تحديث الآن" عشان تشتغل بآخر إصدار.</div>
+      <button class="primary-btn" onclick="forceReloadApp()">تحديث الآن</button>
+    </div>
+  `;
+  document.body.appendChild(el);
+}
+
+function forceReloadApp() {
+  // ✦ إضافة باراميتر عشان نضمن إن الصفحة تتحمّل من جديد من غير أي كاش قديم
+  location.href = location.pathname + "?_upd=" + Date.now();
+}
+
+async function checkForAppUpdate() {
+  if (__updateCheckInFlight) return;
+  if (document.getElementById("update-overlay")) return; // اترسلت الرسالة بالفعل، مفيش داعي نكرر الفحص
+  __updateCheckInFlight = true;
+  try {
+    const url = location.pathname + "?_v=" + Date.now();
+    const res = await fetch(url, { cache: "no-store" });
+    if (res.ok) {
+      const text = await res.text();
+      const m = text.match(/const APP_VERSION\s*=\s*"([^"]+)"/);
+      if (m && m[1] && m[1] !== APP_VERSION) {
+        showUpdateOverlay();
+      }
+    }
+  } catch (e) {
+    // تجاهل أخطاء الشبكة بهدوء — هنحاول تاني في الفحص الجاي
+  } finally {
+    __updateCheckInFlight = false;
+  }
+}
+
+// ✦ فحص دوري كل 4 دقايق + عند رجوع المستخدم للتاب + أول فحص بعد شوية من فتح التطبيق
+setInterval(checkForAppUpdate, 4 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForAppUpdate(); });
+window.addEventListener("focus", checkForAppUpdate);
+setTimeout(checkForAppUpdate, 15000);
 
 /* ===============================================================
    Boot
