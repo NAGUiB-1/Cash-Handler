@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>دفتر المحل</title>
+<title>Smart Cash</title>
 <meta name="theme-color" content="#17262b" id="theme-color-meta">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="دفتر المحل">
+<meta name="apple-mobile-web-app-title" content="Smart Cash">
 <link rel="manifest" id="pwa-manifest-link">
 <script>
   // ✦ يحدد الوضع الليلي/النهاري فورًا قبل أي رسم للصفحة، عشان مفيش ولا لمحة (flash) من اللون الغلط
@@ -28,8 +28,8 @@
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-auth-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore-compat.js" defer></script>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Cpath d='M5 9l1.2-4h11.6L19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Cpath d='M5 9l1.2-4h11.6L19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5' stroke='%23f2ecda' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Crect x='4.5' y='7.3' width='15' height='10.1' rx='2' fill='none' stroke='%23f2ecda' stroke-width='1.8'/%3E%3Crect x='4.5' y='9.4' width='15' height='2.1' fill='%23f2ecda'/%3E%3Cline x1='6.2' y1='14.8' x2='10.5' y2='14.8' stroke='%23f2ecda' stroke-width='1.6' stroke-linecap='round'/%3E%3Cpath d='M17.1 4.1 L16.1 6.7 L17.7 6.3 L16.5 9.4 L19.4 6.2 L17.8 6.6 Z' fill='%23ad7a26'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2317262b'/%3E%3Crect x='4.5' y='7.3' width='15' height='10.1' rx='2' fill='none' stroke='%23f2ecda' stroke-width='1.8'/%3E%3Crect x='4.5' y='9.4' width='15' height='2.1' fill='%23f2ecda'/%3E%3Cline x1='6.2' y1='14.8' x2='10.5' y2='14.8' stroke='%23f2ecda' stroke-width='1.6' stroke-linecap='round'/%3E%3Cpath d='M17.1 4.1 L16.1 6.7 L17.7 6.3 L16.5 9.4 L19.4 6.2 L17.8 6.6 Z' fill='%23ad7a26'/%3E%3C/svg%3E">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Tajawal:wght@400;500;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
 
@@ -55,6 +55,20 @@
     --header-bg: #000000; --header-fg: #f0f0f0; --header-fg-dim: rgba(240,240,240,0.45);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ✦ Scrollbar: رفيع وأسود شيك في كل الأماكن (شاشات كبيرة بشكل خاص) */
+  * { scrollbar-width: thin; scrollbar-color: rgba(23,38,43,0.55) transparent; }
+  html[data-theme="dark"] * { scrollbar-color: rgba(255,255,255,0.35) transparent; }
+  *::-webkit-scrollbar { width: 6px; height: 6px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background-color: rgba(23,38,43,0.45); border-radius: 99px;
+    border: 1px solid transparent; background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background-color: rgba(23,38,43,0.7); }
+  html[data-theme="dark"] *::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.3); }
+  html[data-theme="dark"] *::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,0.5); }
+  *::-webkit-scrollbar-corner { background: transparent; }
   html, body {
     height: 100%;
     touch-action: pan-x pan-y;
@@ -401,7 +415,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-18-01";
+const APP_VERSION = "2026-07-20-01";
 
 /* ===============================================================
    Firebase Config
@@ -1265,8 +1279,8 @@ function renderLoginScreen() {
     <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
       <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
         <div style="text-align:center; margin-bottom:20px;">
-          <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("store",{size:26,color:"var(--ink-60)"})}</div>
-          <div class="empty-state-title">دفتر المحل</div>
+          <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("smartcash-mark",{size:26,color:"var(--ink-60)"})}</div>
+          <div class="empty-state-title">Smart Cash</div>
           <div style="font-size:12.5px; color:var(--ink-60); margin-top:4px;">سجّل الدخول عشان تكمل</div>
         </div>
         <div class="field">
@@ -1289,6 +1303,7 @@ function renderLoginScreen() {
    =============================================================== */
 const ICONS = {
   "store": '<path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a2.2 2.2 0 0 0 4.2 1 2.2 2.2 0 0 0 4 0 2.2 2.2 0 0 0 4 0 2.2 2.2 0 0 0 4.2-1"/><path d="M4.5 9.5V19a1 1 0 0 0 1 1h3.2v-6h6.6v6H18.5a1 1 0 0 0 1-1V9.5"/>',
+  "smartcash-mark": '<rect x="3" y="6.3" width="16.5" height="11.4" rx="2.2"/><line x1="3" y1="9.4" x2="19.5" y2="9.4"/><line x1="6" y1="14.3" x2="10" y2="14.3"/><path d="M17.3 2.2 L15.9 5.6 L18 5.1 L16.4 9 L20 5.2 L17.9 5.7 Z" fill="currentColor" stroke="none"/>',
   "plus": '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
   "x": '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   "wallet": '<path d="M20 12V7H5a2 2 0 0 1 0-4h13v4"/><path d="M3 5v14a2 2 0 0 0 2 2h15v-5"/><path d="M17 12a2 2 0 0 0 0 4h4v-4Z"/>',
@@ -1426,9 +1441,9 @@ function renderHeader(profit) {
   return `
     <div class="app-header">
       <div class="app-header-row">
-        <div class="app-header-logo">${icon("store", {size:19, color:"var(--header-bg)"})}</div>
+        <div class="app-header-logo">${icon("smartcash-mark", {size:19, color:"var(--header-bg)"})}</div>
         <div>
-          <div class="app-header-title">دفتر المحل${state.editingArchiveDay ? " · تعديل أرشيف" : ""}</div>
+          <div class="app-header-title">Smart Cash${state.editingArchiveDay ? " · تعديل أرشيف" : ""}</div>
           <div class="app-header-date">${displayDate(state.today)}</div>
         </div>
         ${profit !== null ? `
@@ -2154,7 +2169,7 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
   const headerBlock = `
     <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #17262b; padding-bottom:18px; margin-bottom:26px;">
       <div>
-        <div style="${HEAD} font-size:26px;">دفتر المحل</div>
+        <div style="${HEAD} font-size:26px;">Smart Cash</div>
         <div style="font-size:14px; color:#5a6b70; margin-top:4px;">تقرير يومي مفصّل</div>
       </div>
       <div style="text-align:left;">
@@ -2393,7 +2408,7 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
 
   const footer = `
     <div style="margin-top:30px; padding-top:14px; border-top:1px solid #e3ddc9; font-size:11.5px; color:#8a8478; text-align:center;">
-      تم إنشاء هذا التقرير تلقائيًا من دفتر المحل
+      تم إنشاء هذا التقرير تلقائيًا من Smart Cash
     </div>
   `;
 
@@ -4383,16 +4398,17 @@ function setupPWA() {
     const iconSvg = (size) => `
       <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24">
         <rect width="24" height="24" rx="6" fill="#17262b"/>
-        <path d="M5 9l1.2-4h11.6L19 9" stroke="#f2ecda" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M5 9a1.8 1.8 0 0 0 3.4.8 1.8 1.8 0 0 0 3.2 0 1.8 1.8 0 0 0 3.2 0A1.8 1.8 0 0 0 19 9" stroke="#f2ecda" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M6 9.5V18a1 1 0 0 0 1 1h2.6v-4.6h4.8V19H17a1 1 0 0 0 1-1V9.5" stroke="#f2ecda" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="4.5" y="7.3" width="15" height="10.1" rx="2" fill="none" stroke="#f2ecda" stroke-width="1.8"/>
+        <rect x="4.5" y="9.4" width="15" height="2.1" fill="#f2ecda"/>
+        <line x1="6.2" y1="14.8" x2="10.5" y2="14.8" stroke="#f2ecda" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M17.1 4.1 L16.1 6.7 L17.7 6.3 L16.5 9.4 L19.4 6.2 L17.8 6.6 Z" fill="#ad7a26"/>
       </svg>`;
     const svgToDataUri = (svg) => "data:image/svg+xml," + encodeURIComponent(svg);
 
     // ✦ المانيفست شغال بصيغة Blob عادي (مفيش قيود المتصفحات عليه زي الـ Service Worker)
     const manifest = {
-      name: "دفتر المحل",
-      short_name: "دفتر المحل",
+      name: "Smart Cash",
+      short_name: "Smart Cash",
       description: "تطبيق إدارة حسابات المحل اليومية",
       start_url: ".",
       scope: ".",
