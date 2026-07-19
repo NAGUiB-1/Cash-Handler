@@ -266,8 +266,9 @@
 
   /* Floating action bar */
   .action-bar {
-    position: absolute; bottom: calc(var(--tabbar-h) + var(--actionbar-gap)); left: 0; right: 0;
+    position: fixed; bottom: calc(var(--tabbar-h) + var(--actionbar-gap)); left: 0; right: 0;
     display: flex; justify-content: center; z-index: 20;
+    transform: translateZ(0); will-change: transform;
   }
   .action-bar-inner { width: 100%; max-width: 480px; padding: 0 16px; display: flex; gap: 10px; }
   .action-bar-add {
@@ -294,7 +295,7 @@
   .closed-stamp-diff { margin-top: 8px; font-size: 13px; }
 
   /* Sheets (modal) */
-  .sheet-overlay { position: absolute; inset: 0; z-index: 50; display: flex; justify-content: center; }
+  .sheet-overlay { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; }
   .sheet-backdrop { position: absolute; inset: 0; background: rgba(15,20,22,0.55); }
   .sheet {
     position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: calc(var(--vh100, 1vh) * 88); max-height: 88svh; max-height: 88dvh;
@@ -379,7 +380,8 @@
 
   /* Tab bar */
   .tab-bar-wrap {
-    position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; z-index: 30;
+    position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; z-index: 30;
+    transform: translateZ(0); will-change: transform;
   }
   .tab-bar {
     width: 100%; max-width: 480px; min-height: var(--tabbar-h); background: var(--header-bg); display: flex;
@@ -466,7 +468,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-20-11";
+const APP_VERSION = "2026-07-18-01";
 
 /* ===============================================================
    Firebase Config
