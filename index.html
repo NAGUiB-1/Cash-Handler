@@ -87,18 +87,20 @@
   /* ✦ Responsive: وسّع الحاوية تدريجيًا على الشاشات الأكبر (تابلت / لابتوب / ديسكتوب) */
   @media (min-width: 640px) {
     #shell { max-width: 620px; box-shadow: 0 0 60px rgba(0,0,0,0.35); }
-    .tab-bar, .action-bar-inner { max-width: 620px; }
+    .tab-bar, .action-bar-inner, .sheet { max-width: 620px; }
   }
   @media (min-width: 900px) {
     #shell { max-width: 760px; }
-    .tab-bar, .action-bar-inner { max-width: 760px; }
+    .tab-bar, .action-bar-inner, .sheet { max-width: 760px; }
     .balance-row2 { grid-template-columns: repeat(4, 1fr); }
     .fawry-card-subs { grid-template-columns: repeat(3, 1fr); }
     .content { padding-left: 22px; padding-right: 22px; }
+    .field-2col { grid-template-columns: repeat(4, 1fr); }
+    .sheet-body { padding-left: 24px; padding-right: 24px; }
   }
   @media (min-width: 1280px) {
     #shell { max-width: 920px; }
-    .tab-bar, .action-bar-inner { max-width: 920px; }
+    .tab-bar, .action-bar-inner, .sheet { max-width: 920px; }
   }
 
   /* Header */
@@ -255,10 +257,11 @@
   .closed-stamp-diff { margin-top: 8px; font-size: 13px; }
 
   /* Sheets (modal) */
-  .sheet-overlay { position: fixed; inset: 0; z-index: 50; }
+  .sheet-overlay { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; }
   .sheet-backdrop { position: absolute; inset: 0; background: rgba(15,20,22,0.55); }
   .sheet {
     position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh;
+    width: 100%; max-width: 480px; margin: 0 auto;
     background: var(--paper); border-top-left-radius: 22px; border-top-right-radius: 22px;
     display: flex; flex-direction: column; box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
   }
@@ -398,7 +401,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-19-05";
+const APP_VERSION = "2026-07-18-01";
 
 /* ===============================================================
    Firebase Config
