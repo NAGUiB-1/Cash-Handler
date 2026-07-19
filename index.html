@@ -398,7 +398,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-19-02";
+const APP_VERSION = "2026-07-19-05";
 
 /* ===============================================================
    Firebase Config
@@ -1733,18 +1733,24 @@ function islamCard(value) {
   `;
 }
 
-/* ✦ NEW: كارت معلوماتي بس لعرض عمولات المحافظ — مش مربوط بالتقفيل ولا أي استعلام، مجرد عرض للقيم المسجلة */
+/* ✦ NEW: كارت معلوماتي بس لعرض إجمالي عمولات المحافظ المتحصلة النهاردة — مش مربوط بالتقفيل ولا أي استعلام، مجرد عرض */
 function walletCommissionsInfoCard() {
-  const anySet = WALLET_IDS.some(id => num(state.walletCommissions?.[id]) > 0);
+  const totals = Object.fromEntries(WALLET_IDS.map(id => [id, 0]));
+  (state.dayData.transactions || []).forEach(t => {
+    if (t.category === "vodafone" && t.walletId && num(t.commission) > 0) {
+      totals[t.walletId] = (totals[t.walletId] || 0) + num(t.commission);
+    }
+  });
+  const anySet = WALLET_IDS.some(id => totals[id] > 0);
   return `
     <div class="balance-card" style="width:100%; margin-bottom:8px;">
-      <div class="balance-card-top">${icon("landmark", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">عمولات المحافظ</div></div>
+      <div class="balance-card-top">${icon("landmark", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">عمولات المحافظ اليوم</div></div>
       ${!anySet ? `
-        <div style="font-size:13px; color:var(--ink-60); font-weight:600;">مفيش عمولات متسجلة للمحافظ</div>
+        <div style="font-size:13px; color:var(--ink-60); font-weight:600;">مفيش عمولات متسجلة للمحافظ النهاردة</div>
       ` : `
         <div style="display:flex; flex-direction:column; gap:6px;">
           ${WALLET_IDS.map(id => {
-            const comm = num(state.walletCommissions?.[id]);
+            const comm = totals[id];
             if (comm <= 0) return "";
             return `
               <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">
