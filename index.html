@@ -92,6 +92,8 @@
   html, body {
     height: 100%;
     height: calc(var(--vh100, 1vh) * 100);
+    height: 100svh;
+    height: 100dvh;
     touch-action: pan-x pan-y;
     -ms-touch-action: pan-x pan-y;
     -webkit-text-size-adjust: 100%;
@@ -116,7 +118,7 @@
 
   #shell {
     width: 100%; max-width: 480px; background: var(--paper);
-    min-height: 100vh; min-height: 100svh; min-height: calc(var(--vh100, 1vh) * 100);
+    min-height: 100vh; min-height: calc(var(--vh100, 1vh) * 100); min-height: 100svh; min-height: 100dvh;
     position: relative;
     overflow-x: hidden;
   }
@@ -295,7 +297,7 @@
   .sheet-overlay { position: absolute; inset: 0; z-index: 50; display: flex; justify-content: center; }
   .sheet-backdrop { position: absolute; inset: 0; background: rgba(15,20,22,0.55); }
   .sheet {
-    position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: calc(var(--vh100, 1vh) * 88);
+    position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: calc(var(--vh100, 1vh) * 88); max-height: 88svh; max-height: 88dvh;
     width: 100%; max-width: 480px; margin: 0 auto;
     background: var(--paper); border-top-left-radius: 22px; border-top-right-radius: 22px;
     display: flex; flex-direction: column; box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
@@ -391,7 +393,7 @@
   .tab-btn-label { font-size: 11px; font-weight: 600; white-space: nowrap; }
   .tab-btn-dot { position: absolute; top: 2px; left: calc(50% + 8px); width: 6px; height: 6px; border-radius: 99px; background: var(--emerald); }
 
-  .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; height: calc(var(--vh100, 1vh) * 70); gap: 12px; }
+  .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; height: calc(var(--vh100, 1vh) * 70); height: 70svh; height: 70dvh; gap: 12px; }
   .loading-text { font-family: 'Tajawal', sans-serif; color: var(--ink-40); font-size: 14px; }
 
   .tx-row-title, .services-row-name, .close-row-label, .archive-list-item-date,
@@ -464,7 +466,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-18-01";
+const APP_VERSION = "2026-07-20-10";
 
 /* ===============================================================
    Firebase Config
@@ -1325,7 +1327,7 @@ function logout() {
    =============================================================== */
 function renderLoginScreen() {
   return `
-    <div style="min-height:100vh; min-height:100svh; min-height:calc(var(--vh100, 1vh) * 100); display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
+    <div style="min-height:100vh; min-height:calc(var(--vh100, 1vh) * 100); min-height:100svh; min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
       <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
         <div style="text-align:center; margin-bottom:20px;">
           <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("smartcash-mark",{size:26,color:"var(--ink-60)"})}</div>
