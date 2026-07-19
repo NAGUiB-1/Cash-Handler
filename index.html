@@ -40,6 +40,17 @@
     setTimeout(setRealVh, 100);
     setTimeout(setRealVh, 400);
     setTimeout(setRealVh, 1000);
+    // ✦ NEW: آيفون أحيانًا مابيحدّثش قياس الـ dvh فعليًا إلا لما يحصل scroll حقيقي، فبنعمل "نطة" بسيطة صفر بكسل
+    //   فور ما التطبيق يفتح عشان نجبره يحسب الارتفاع الصحيح فورًا، بدل ما ينتظر لمس المستخدم للشاشة
+    function nudgeScroll() {
+      window.scrollTo(0, 1);
+      window.scrollTo(0, 0);
+    }
+    window.addEventListener("load", function () {
+      nudgeScroll();
+      setTimeout(nudgeScroll, 300);
+      setTimeout(nudgeScroll, 800);
+    });
   })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
