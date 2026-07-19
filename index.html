@@ -398,7 +398,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-19-01";
+const APP_VERSION = "2026-07-19-02";
 
 /* ===============================================================
    Firebase Config
@@ -2035,17 +2035,20 @@ function renderClosedStamp(closing, live, closedBy) {
     ...machineDebtDiffs,
     num(closing.islamBalance) - live.islamBalance,
   ];
-  const matched = diffs.every(d => Math.abs(d) < 0.01);
+  const hasDeficit = diffs.some(d => d < -0.01);
   const totalDiff = diffs.reduce((a,b)=>a+b, 0);
-  const c = matched ? "var(--emerald)" : "var(--rust)";
+  const exactMatch = Math.abs(totalDiff) < 0.01 && !hasDeficit;
+  const hasSurplus = !hasDeficit && !exactMatch;
+  const c = hasDeficit ? "var(--rust)" : "var(--emerald)";
+  const badgeLabel = hasDeficit ? "فيه فرق" : (hasSurplus ? "فيه زيادة" : "مطابق");
   return `
     <div class="closed-stamp" style="border:2px dashed ${c};">
       <div class="closed-stamp-badge" style="border:2px solid ${c}; color:${c};">
-        ${icon(matched ? "check-circle-2" : "alert-triangle", {size:17})}
-        ${matched ? "مطابق" : "فيه فرق"}
+        ${icon(hasDeficit ? "alert-triangle" : "check-circle-2", {size:17})}
+        ${badgeLabel}
       </div>
       <div class="closed-stamp-sub">اليوم مقفول${closedBy ? ` · بواسطة ${esc(closedBy)}` : ""}</div>
-      ${!matched ? `<div class="closed-stamp-diff">إجمالي الفرق: <span class="num" style="font-weight:700;color:var(--rust);">${money(totalDiff)}</span> ج.م</div>` : ""}
+      ${!exactMatch ? `<div class="closed-stamp-diff">إجمالي الفرق: <span class="num" style="font-weight:700;color:${c};">${money(totalDiff)}</span> ج.م</div>` : ""}
     </div>
   `;
 }
@@ -3651,9 +3654,8 @@ function closeRowInputChanged(kind, id, sub) {
   const val = el.value;
   if (val === "") { diffEl.innerHTML = ""; return; }
   const diff = num(val) - expected;
-  const ok = Math.abs(diff) < 0.01;
   diffEl.innerHTML = `الفرق: <span class="num" style="font-weight:700;">${money(diff)}</span>`;
-  diffEl.style.color = ok ? "var(--emerald)" : "var(--rust)";
+  diffEl.style.color = diff < -0.01 ? "var(--rust)" : "var(--emerald)";
 }
 
 function renderCloseSheetBody() {
