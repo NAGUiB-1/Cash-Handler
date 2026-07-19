@@ -22,6 +22,25 @@
       if (metaColor) metaColor.setAttribute("content", theme === "dark" ? "#000000" : "#17262b");
     } catch (e) {}
   })();
+
+  // ✦ NEW: إصلاح ارتفاع الشاشة الحقيقي — خصوصًا على آيفون في وضع PWA (Add to Home Screen)،
+  //   لأن 100vh/100svh مش دايمًا بتساوي الارتفاع الفعلي المرئي هناك، وده بيسبب رفع المحتوى لفوق وفراغ تحت.
+  //   بنحسب الارتفاع الحقيقي بالجافاسكريبت ونحطه في متغيّر CSS، ونحدّثه لما اللاي أوت يتغيّر.
+  (function () {
+    function setRealVh() {
+      var vh = window.innerHeight * 0.01;
+      document.documentElement.style.setProperty("--vh100", vh + "px");
+    }
+    setRealVh();
+    window.addEventListener("resize", setRealVh);
+    window.addEventListener("orientationchange", setRealVh);
+    window.addEventListener("pageshow", setRealVh);
+    document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") setRealVh(); });
+    // ✦ آيفون أحيانًا بيدّي قياس مؤقت غلط أول ما يفتح الـ PWA قبل ما شريط الحالة يستقر، فبنعيد الحساب كذا مرة بعد الفتح
+    setTimeout(setRealVh, 100);
+    setTimeout(setRealVh, 400);
+    setTimeout(setRealVh, 1000);
+  })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
@@ -95,7 +114,8 @@
 
   #shell {
     width: 100%; max-width: 480px; background: var(--paper);
-    min-height: 100vh; min-height: 100svh; position: relative;
+    min-height: 100vh; min-height: 100svh; min-height: calc(var(--vh100, 1vh) * 100);
+    position: relative;
     overflow-x: hidden;
   }
   /* ✦ Responsive: وسّع الحاوية تدريجيًا على الشاشات الأكبر (تابلت / لابتوب / ديسكتوب) */
@@ -274,7 +294,7 @@
   .sheet-overlay { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; }
   .sheet-backdrop { position: absolute; inset: 0; background: rgba(15,20,22,0.55); }
   .sheet {
-    position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh;
+    position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: calc(var(--vh100, 1vh) * 88);
     width: 100%; max-width: 480px; margin: 0 auto;
     background: var(--paper); border-top-left-radius: 22px; border-top-right-radius: 22px;
     display: flex; flex-direction: column; box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
@@ -371,7 +391,7 @@
   .tab-btn-label { font-size: 11px; font-weight: 600; white-space: nowrap; }
   .tab-btn-dot { position: absolute; top: 2px; left: calc(50% + 8px); width: 6px; height: 6px; border-radius: 99px; background: var(--emerald); }
 
-  .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; gap: 12px; }
+  .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; height: calc(var(--vh100, 1vh) * 70); gap: 12px; }
   .loading-text { font-family: 'Tajawal', sans-serif; color: var(--ink-40); font-size: 14px; }
 
   .tx-row-title, .services-row-name, .close-row-label, .archive-list-item-date,
@@ -404,6 +424,35 @@
   }
   .update-card-title { font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 17px; color: var(--ink); margin-bottom: 8px; }
   .update-card-desc { font-size: 13.5px; color: var(--ink-60); margin-bottom: 22px; line-height: 1.7; }
+
+  /* ✦ NEW: بانر "ثبّت التطبيق" — بيظهر بس لما الموقع مفتوح من متصفح عادي (مش مثبّت بالفعل) */
+  .install-banner-wrap {
+    position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--actionbar-h) + var(--actionbar-gap) + 10px); display: flex; justify-content: center; z-index: 25;
+    padding: 0 14px;
+  }
+  .install-banner {
+    width: 100%; max-width: 480px; background: var(--surface); border: 1px solid var(--ink-10);
+    border-radius: 16px; padding: 12px 12px 12px 14px; display: flex; align-items: center; gap: 10px;
+    box-shadow: 0 10px 34px rgba(0,0,0,0.28);
+  }
+  .install-banner-icon {
+    width: 40px; height: 40px; border-radius: 11px; background: var(--ink); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .install-banner-body { flex: 1; min-width: 0; }
+  .install-banner-title { font-family: 'Cairo', sans-serif; font-weight: 800; font-size: 13.5px; color: var(--ink); }
+  .install-banner-desc { font-size: 11.5px; color: var(--ink-60); margin-top: 2px; line-height: 1.5; }
+  .install-banner-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .install-banner-btn {
+    background: var(--ink); color: var(--paper); border: none; border-radius: 10px; padding: 9px 13px;
+    font-family: 'Cairo', sans-serif; font-weight: 700; font-size: 12.5px; white-space: nowrap;
+  }
+  .install-banner-dismiss {
+    background: none; border: none; padding: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  @media (min-width: 640px) { .install-banner-wrap { max-width: none; } .install-banner { max-width: 620px; } }
+  @media (min-width: 900px) { .install-banner { max-width: 760px; } }
+  @media (min-width: 1280px) { .install-banner { max-width: 920px; } }
 </style>
 </head>
 <body>
@@ -415,7 +464,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-20-02";
+const APP_VERSION = "2026-07-20-05";
 
 /* ===============================================================
    Firebase Config
@@ -1276,7 +1325,7 @@ function logout() {
    =============================================================== */
 function renderLoginScreen() {
   return `
-    <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
+    <div style="min-height:100vh; min-height:100svh; min-height:calc(var(--vh100, 1vh) * 100); display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
       <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
         <div style="text-align:center; margin-bottom:20px;">
           <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("smartcash-mark",{size:26,color:"var(--ink-60)"})}</div>
@@ -4440,6 +4489,102 @@ function setupPWA() {
   }
 }
 setupPWA();
+
+/* ===============================================================
+   ✦ NEW: بانر "ثبّت التطبيق" — لو الموقع مفتوح من متصفح عادي (مش مثبّت كـ PWA بالفعل)
+   - أندرويد / كروم / إيدج على الويندوز أو الماك: زر تثبيت حقيقي (beforeinstallprompt)
+   - آيفون (سفاري): مفيش برومبت تثبيت رسمي، فبنوري تعليمات "شير ثم إضافة للشاشة الرئيسية"
+   =============================================================== */
+let __deferredInstallPrompt = null;
+const INSTALL_DISMISS_KEY = "cashapp_install_dismissed_at";
+const INSTALL_DISMISS_DAYS = 7; // لو المستخدم قفل البانر، منورّهوش تاني إلا بعد كذا يوم
+
+function isRunningStandalone() {
+  return window.matchMedia && window.matchMedia("(display-mode: standalone)").matches
+    || window.navigator.standalone === true; // آيفون القديم
+}
+function isIOSDevice() {
+  const ua = window.navigator.userAgent || "";
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes("Macintosh") && "ontouchend" in document);
+  return isIOS;
+}
+function wasInstallBannerDismissedRecently() {
+  try {
+    const t = parseInt(localStorage.getItem(INSTALL_DISMISS_KEY) || "0", 10);
+    if (!t) return false;
+    return (Date.now() - t) < INSTALL_DISMISS_DAYS * 24 * 60 * 60 * 1000;
+  } catch (e) { return false; }
+}
+function dismissInstallBanner() {
+  try { localStorage.setItem(INSTALL_DISMISS_KEY, String(Date.now())); } catch (e) {}
+  const el = document.getElementById("install-banner-wrap");
+  if (el) el.remove();
+}
+
+function showInstallBanner(mode) {
+  if (document.getElementById("install-banner-wrap")) return; // ظاهر بالفعل
+  if (wasInstallBannerDismissedRecently()) return;
+  const wrap = document.createElement("div");
+  wrap.id = "install-banner-wrap";
+  wrap.className = "install-banner-wrap";
+  const cardIcon = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--paper)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>`;
+  const desc = mode === "ios"
+    ? 'اضغط على زر المشاركة <span style="font-weight:700;">⬆️</span> تحت، وبعدين اختار "إضافة إلى الشاشة الرئيسية"'
+    : "ثبّته على جهازك عشان يفتح بسرعة زي أي تطبيق عادي";
+  wrap.innerHTML = `
+    <div class="install-banner">
+      <div class="install-banner-icon">${cardIcon}</div>
+      <div class="install-banner-body">
+        <div class="install-banner-title">ثبّت Smart Cash</div>
+        <div class="install-banner-desc">${desc}</div>
+      </div>
+      <div class="install-banner-actions">
+        ${mode === "prompt" ? `<button class="install-banner-btn" id="install-banner-action-btn">تثبيت</button>` : ""}
+        <button class="install-banner-dismiss" id="install-banner-close-btn" aria-label="إغلاق">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ink-40)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  const closeBtn = document.getElementById("install-banner-close-btn");
+  if (closeBtn) closeBtn.addEventListener("click", dismissInstallBanner);
+  if (mode === "prompt") {
+    const actionBtn = document.getElementById("install-banner-action-btn");
+    if (actionBtn) actionBtn.addEventListener("click", async () => {
+      if (!__deferredInstallPrompt) return;
+      __deferredInstallPrompt.prompt();
+      try {
+        const choice = await __deferredInstallPrompt.userChoice;
+        if (choice && choice.outcome === "accepted") { dismissInstallBanner(); }
+      } catch (e) {}
+      __deferredInstallPrompt = null;
+    });
+  }
+}
+
+function initInstallPrompt() {
+  if (isRunningStandalone()) return; // متثبّت بالفعل — من غير بانر
+
+  // ✦ أندرويد / كروم / إيدج (ديسكتوب أو موبايل): الحدث ده بيتفعّل لو المتصفح شايف إن الموقع صالح للتثبيت
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    __deferredInstallPrompt = e;
+    showInstallBanner("prompt");
+  });
+
+  // ✦ لو اتثبّت بالفعل من نفس السيشن
+  window.addEventListener("appinstalled", () => { dismissInstallBanner(); });
+
+  // ✦ آيفون: مفيش beforeinstallprompt خالص، فبنوري تعليمات يدوية بعد شوية من فتح الصفحة
+  if (isIOSDevice()) {
+    setTimeout(() => { if (!isRunningStandalone()) showInstallBanner("ios"); }, 2500);
+  }
+}
+initInstallPrompt();
 
 /* ===============================================================
    ✦ NEW: فحص وجود تحديث جديد للتطبيق
