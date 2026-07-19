@@ -24,11 +24,13 @@
   })();
 
   // ✦ NEW: إصلاح ارتفاع الشاشة الحقيقي — خصوصًا على آيفون في وضع PWA (Add to Home Screen)،
-  //   لأن 100vh/100svh مش دايمًا بتساوي الارتفاع الفعلي المرئي هناك، وده بيسبب رفع المحتوى لفوق وفراغ تحت.
-  //   بنحسب الارتفاع الحقيقي بالجافاسكريبت ونحطه في متغيّر CSS، ونحدّثه لما اللاي أوت يتغيّر.
+  //   لأن 100vh/100svh/100dvh مش دايمًا بتساوي الارتفاع الفعلي المرئي هناك فور الفتح (بتاخد شوية تستقر)،
+  //   وده بيسبب رفع المحتوى لفوق وفراغ تحت لحد ما المستخدم يعمل scroll. بنستخدم visualViewport
+  //   لأنه بيدّي القياس الصحيح والفوري، وبنخليه هو المتحكم الأساسي بدل الاعتماد على dvh وحدها.
   (function () {
     function setRealVh() {
-      var vh = window.innerHeight * 0.01;
+      var h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+      var vh = h * 0.01;
       document.documentElement.style.setProperty("--vh100", vh + "px");
     }
     setRealVh();
@@ -36,21 +38,16 @@
     window.addEventListener("orientationchange", setRealVh);
     window.addEventListener("pageshow", setRealVh);
     document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") setRealVh(); });
-    // ✦ آيفون أحيانًا بيدّي قياس مؤقت غلط أول ما يفتح الـ PWA قبل ما شريط الحالة يستقر، فبنعيد الحساب كذا مرة بعد الفتح
-    setTimeout(setRealVh, 100);
-    setTimeout(setRealVh, 400);
-    setTimeout(setRealVh, 1000);
-    // ✦ NEW: آيفون أحيانًا مابيحدّثش قياس الـ dvh فعليًا إلا لما يحصل scroll حقيقي، فبنعمل "نطة" بسيطة صفر بكسل
-    //   فور ما التطبيق يفتح عشان نجبره يحسب الارتفاع الصحيح فورًا، بدل ما ينتظر لمس المستخدم للشاشة
-    function nudgeScroll() {
-      window.scrollTo(0, 1);
-      window.scrollTo(0, 0);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", setRealVh);
+      window.visualViewport.addEventListener("scroll", setRealVh);
     }
-    window.addEventListener("load", function () {
-      nudgeScroll();
-      setTimeout(nudgeScroll, 300);
-      setTimeout(nudgeScroll, 800);
-    });
+    // ✦ آيفون أحيانًا بيدّي قياس مؤقت غلط أول ما يفتح الـ PWA قبل ما شريط الحالة يستقر، فبنعيد الحساب كذا مرة بعد الفتح
+    setTimeout(setRealVh, 50);
+    setTimeout(setRealVh, 150);
+    setTimeout(setRealVh, 300);
+    setTimeout(setRealVh, 600);
+    setTimeout(setRealVh, 1200);
   })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
@@ -102,9 +99,9 @@
   *::-webkit-scrollbar-corner { background: transparent; }
   html, body {
     height: 100%;
-    height: calc(var(--vh100, 1vh) * 100);
     height: 100svh;
     height: 100dvh;
+    height: calc(var(--vh100, 1vh) * 100);
     touch-action: pan-x pan-y;
     -ms-touch-action: pan-x pan-y;
     -webkit-text-size-adjust: 100%;
@@ -129,7 +126,7 @@
 
   #shell {
     width: 100%; max-width: 480px; background: var(--paper);
-    min-height: 100vh; min-height: calc(var(--vh100, 1vh) * 100); min-height: 100svh; min-height: 100dvh;
+    min-height: 100vh; min-height: 100svh; min-height: 100dvh; min-height: calc(var(--vh100, 1vh) * 100);
     position: relative;
     overflow-x: hidden;
   }
@@ -309,7 +306,7 @@
   .sheet-overlay { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; }
   .sheet-backdrop { position: absolute; inset: 0; background: rgba(15,20,22,0.55); }
   .sheet {
-    position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: calc(var(--vh100, 1vh) * 88); max-height: 88svh; max-height: 88dvh;
+    position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: 88svh; max-height: 88dvh; max-height: calc(var(--vh100, 1vh) * 88);
     width: 100%; max-width: 480px; margin: 0 auto;
     background: var(--paper); border-top-left-radius: 22px; border-top-right-radius: 22px;
     display: flex; flex-direction: column; box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
@@ -406,7 +403,7 @@
   .tab-btn-label { font-size: 11px; font-weight: 600; white-space: nowrap; }
   .tab-btn-dot { position: absolute; top: 2px; left: calc(50% + 8px); width: 6px; height: 6px; border-radius: 99px; background: var(--emerald); }
 
-  .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; height: calc(var(--vh100, 1vh) * 70); height: 70svh; height: 70dvh; gap: 12px; }
+  .loading-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 70vh; height: 70svh; height: 70dvh; height: calc(var(--vh100, 1vh) * 70); gap: 12px; }
   .loading-text { font-family: 'Tajawal', sans-serif; color: var(--ink-40); font-size: 14px; }
 
   .tx-row-title, .services-row-name, .close-row-label, .archive-list-item-date,
@@ -1340,7 +1337,7 @@ function logout() {
    =============================================================== */
 function renderLoginScreen() {
   return `
-    <div style="min-height:100vh; min-height:calc(var(--vh100, 1vh) * 100); min-height:100svh; min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
+    <div style="min-height:100vh; min-height:100svh; min-height:100dvh; min-height:calc(var(--vh100, 1vh) * 100); display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
       <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:28px 22px; border:1px solid var(--ink-10);">
         <div style="text-align:center; margin-bottom:20px;">
           <div class="empty-state-icon" style="margin:0 auto 14px;">${icon("smartcash-mark",{size:26,color:"var(--ink-60)"})}</div>
