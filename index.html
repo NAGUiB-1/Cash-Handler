@@ -60,6 +60,7 @@
     --surface: #ffffff; --surface-2: #f7f4ea;
     --header-bg: #17262b; --header-fg: #f2ecda; --header-fg-dim: rgba(242,236,218,0.45);
     --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-t: env(safe-area-inset-top, 0px);
     --tabbar-h: calc(65px + var(--safe-b));
     --actionbar-h: 54px;
     --actionbar-gap: 12px;
@@ -90,6 +91,7 @@
   *::-webkit-scrollbar-corner { background: transparent; }
   html, body {
     height: 100%;
+    height: calc(var(--vh100, 1vh) * 100);
     touch-action: pan-x pan-y;
     -ms-touch-action: pan-x pan-y;
     -webkit-text-size-adjust: 100%;
@@ -140,7 +142,7 @@
   /* Header */
   .app-header {
     background: var(--header-bg); color: var(--header-fg);
-    padding: 22px 18px 20px; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;
+    padding: calc(22px + var(--safe-t)) 18px 20px; border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;
   }
   .app-header-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; row-gap: 8px; }
   .app-header-logo {
@@ -262,9 +264,8 @@
 
   /* Floating action bar */
   .action-bar {
-    position: fixed; bottom: calc(var(--tabbar-h) + var(--actionbar-gap)); left: 0; right: 0;
+    position: absolute; bottom: calc(var(--tabbar-h) + var(--actionbar-gap)); left: 0; right: 0;
     display: flex; justify-content: center; z-index: 20;
-    transform: translateZ(0); will-change: transform;
   }
   .action-bar-inner { width: 100%; max-width: 480px; padding: 0 16px; display: flex; gap: 10px; }
   .action-bar-add {
@@ -291,7 +292,7 @@
   .closed-stamp-diff { margin-top: 8px; font-size: 13px; }
 
   /* Sheets (modal) */
-  .sheet-overlay { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; }
+  .sheet-overlay { position: absolute; inset: 0; z-index: 50; display: flex; justify-content: center; }
   .sheet-backdrop { position: absolute; inset: 0; background: rgba(15,20,22,0.55); }
   .sheet {
     position: absolute; left: 0; right: 0; bottom: 0; max-height: 88vh; max-height: calc(var(--vh100, 1vh) * 88);
@@ -376,8 +377,7 @@
 
   /* Tab bar */
   .tab-bar-wrap {
-    position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; z-index: 30;
-    transform: translateZ(0); will-change: transform;
+    position: absolute; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; z-index: 30;
   }
   .tab-bar {
     width: 100%; max-width: 480px; min-height: var(--tabbar-h); background: var(--header-bg); display: flex;
@@ -399,7 +399,7 @@
   .close-row-top { flex-wrap: wrap; row-gap: 4px; }
 
   @media (max-width: 360px) {
-    .app-header { padding: 18px 14px 16px; }
+    .app-header { padding: calc(18px + var(--safe-t)) 14px 16px; }
     .app-header-title { font-size: 16.5px; }
     .app-header-profit-value { font-size: 15.5px; }
     .content { padding-left: 12px; padding-right: 12px; }
@@ -464,7 +464,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-20-05";
+const APP_VERSION = "2026-07-18-01";
 
 /* ===============================================================
    Firebase Config
