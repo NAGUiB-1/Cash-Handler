@@ -398,7 +398,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-18-06";
+const APP_VERSION = "2026-07-19-01";
 
 /* ===============================================================
    Firebase Config
@@ -1429,7 +1429,7 @@ function renderHeader(profit) {
           <div class="app-header-date">${displayDate(state.today)}</div>
         </div>
         ${profit !== null ? `
-          <div class="app-header-profit">
+          <div class="app-header-profit" onclick="openProfitBreakdownSheet()" style="cursor:pointer;">
             <div class="app-header-profit-label">مكسب اليوم</div>
             <div class="app-header-profit-value num">${money(profit)} <span style="font-size:11px;font-weight:400;">ج.م</span></div>
           </div>
@@ -1534,6 +1534,7 @@ function renderBalancesGrid(live) {
         <div class="balance-row2" style="margin-bottom:8px;">
           ${WALLET_IDS.map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id], id)).join("")}
         </div>
+        ${walletCommissionsInfoCard()}
       `}
 
       ${state.machines.length ? `
@@ -1728,6 +1729,32 @@ function islamCard(value) {
         <div class="balance-card-value num" style="color:${color};">${display}</div>
         <div style="font-size:12px; font-weight:700; color:${color};">${statusLabel}</div>
       </div>
+    </div>
+  `;
+}
+
+/* ✦ NEW: كارت معلوماتي بس لعرض عمولات المحافظ — مش مربوط بالتقفيل ولا أي استعلام، مجرد عرض للقيم المسجلة */
+function walletCommissionsInfoCard() {
+  const anySet = WALLET_IDS.some(id => num(state.walletCommissions?.[id]) > 0);
+  return `
+    <div class="balance-card" style="width:100%; margin-bottom:8px;">
+      <div class="balance-card-top">${icon("landmark", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">عمولات المحافظ</div></div>
+      ${!anySet ? `
+        <div style="font-size:13px; color:var(--ink-60); font-weight:600;">مفيش عمولات متسجلة للمحافظ</div>
+      ` : `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${WALLET_IDS.map(id => {
+            const comm = num(state.walletCommissions?.[id]);
+            if (comm <= 0) return "";
+            return `
+              <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">
+                <span style="font-size:13px; color:var(--ink);">${esc(state.walletNames[id])}</span>
+                <span class="num" style="font-size:13.5px; font-weight:700; color:var(--gold);">${money(comm)} ج.م</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      `}
     </div>
   `;
 }
@@ -2369,6 +2396,61 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     ${txTable}
     ${footer}
   </div>`;
+}
+
+/* ✦ NEW: فتح شيت تفاصيل مكسب اليوم (مكسب المكن / المحافظ / انستاباي) */
+function openProfitBreakdownSheet() {
+  state.sheet = "profitBreakdown";
+  render();
+}
+
+/* ✦ NEW: يحسب مكسب اليوم مقسّم حسب النوع (محافظ / انستاباي / مكن / حساب إسلام) */
+function computeProfitBreakdown(dayData) {
+  const groups = {
+    vodafone: { label: "فودافون كاش (المحافظ)", icon: "wallet", color: "var(--steel)", profit: 0, count: 0 },
+    instapay: { label: "انستاباي", icon: "smartphone", color: "var(--emerald)", profit: 0, count: 0 },
+    machine: { label: "شحن مكن", icon: "zap", color: "var(--gold)", profit: 0, count: 0 },
+    islam: { label: "حساب إسلام", icon: "user", color: "var(--rust)", profit: 0, count: 0 },
+  };
+  (dayData.transactions || []).forEach(t => {
+    const p = num(t.profit);
+    if (p === 0) return;
+    if (t.category === "vodafone") { groups.vodafone.profit += p; groups.vodafone.count++; }
+    else if (t.category === "instapay") { groups.instapay.profit += p; groups.instapay.count++; }
+    else if (t.category === "machine") { groups.machine.profit += p; groups.machine.count++; }
+    else if (t.category === "islam") { groups.islam.profit += p; groups.islam.count++; }
+  });
+  return groups;
+}
+
+function renderProfitBreakdownSheetBody() {
+  const groups = computeProfitBreakdown(state.dayData);
+  const total = Object.values(groups).reduce((a, g) => a + g.profit, 0);
+  const rows = Object.values(groups).filter(g => g.count > 0 || Math.abs(g.profit) >= 0.01);
+  return `
+    <div class="balance-card" style="width:100%; margin-bottom:14px;">
+      <div class="balance-card-top">${icon("banknote",{size:13,color:"var(--ink-40)"})}<div class="balance-card-label">إجمالي مكسب اليوم</div></div>
+      <div class="balance-card-value num" style="color:var(--emerald); font-size:20px;">${money(total)} <span style="font-size:12px;font-weight:400;color:var(--ink-40);">ج.م</span></div>
+    </div>
+    ${rows.length === 0 ? `<div class="tx-list-empty">لسه مفيش مكسب متسجل النهاردة</div>` : `
+      <div class="tx-list-box">
+        ${rows.map(g => `
+          <div class="tx-row">
+            <div class="tx-row-icon" style="background: ${tint15(g.color)};">
+              ${icon(g.icon, {size:16, color: g.color})}
+            </div>
+            <div class="tx-row-body">
+              <div class="tx-row-title">${g.label}</div>
+              <div class="tx-row-sub">${g.count} معاملة${g.count!==1?'':''}</div>
+            </div>
+            <div class="tx-row-amt">
+              <div class="tx-row-amt-val num" style="color:var(--emerald);">${money(g.profit)}</div>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `}
+  `;
 }
 
 function confirmDeleteTx(id) {
@@ -3782,6 +3864,9 @@ function renderSheet() {
     title = "إضافة مستخدم جديد"; body = renderAddUserSheetBody();
     const valid = state.newUserForm && (state.newUserForm.username||"").trim() && (state.newUserForm.password||"").length >= 6;
     footer = `<button class="primary-btn" id="au-submit-btn" onclick="submitAddUser()" ${valid ? "" : "disabled"}>${state.addUserBusy ? "جاري الإضافة..." : "إضافة المستخدم"}</button>`;
+  } else if (state.sheet === "profitBreakdown") {  // ✦ NEW
+    title = "تفاصيل مكسب اليوم"; body = renderProfitBreakdownSheetBody();
+    footer = `<button class="action-bar-close" style="width:100%;" onclick="closeSheet()">تمام</button>`;
   }
 
   return `
