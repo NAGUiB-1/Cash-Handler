@@ -48,6 +48,32 @@
     setTimeout(setRealVh, 300);
     setTimeout(setRealVh, 600);
     setTimeout(setRealVh, 1200);
+
+    // ✦ NEW: المشكلة الحقيقية مش بس في القياس، لكن إن WebKit في وضع PWA أحيانًا مابيعيدش رسم العناصر
+    //   الـ fixed (زي الأشرطة السفلية) إلا لما يحصل scroll أو repaint إجباري. بنجبره على إعادة الرسم
+    //   ببساطة عن طريق تحريك الـ body بكسل واحد بالـ transform (مش scroll) وإرجاعه فورًا — ده بيجبر
+    //   المتصفح يعيد حساب طبقات الـ fixed من غير ما يحتاج لمسة فعلية من المستخدم.
+    function forceRepaint() {
+      var b = document.body;
+      if (!b) return;
+      var prev = b.style.transform;
+      b.style.transform = "translateZ(0.01px)";
+      // eslint-disable-next-line no-unused-expressions
+      b.offsetHeight; // إجبار المتصفح يحسب الـ layout فعليًا (reflow) قبل ما نرجّع القيمة
+      b.style.transform = prev || "";
+    }
+    function settleLayout() {
+      setRealVh();
+      requestAnimationFrame(function () {
+        requestAnimationFrame(forceRepaint);
+      });
+    }
+    window.addEventListener("load", settleLayout);
+    setTimeout(settleLayout, 50);
+    setTimeout(settleLayout, 250);
+    setTimeout(settleLayout, 600);
+    setTimeout(settleLayout, 1200);
+    setTimeout(settleLayout, 2000);
   })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
