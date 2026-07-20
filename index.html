@@ -164,7 +164,6 @@
   @media (min-width: 640px) {
     #shell { max-width: 620px; box-shadow: 0 0 60px rgba(0,0,0,0.35); }
     .tab-bar, .action-bar-inner { max-width: 620px; }
-    .sheet { max-width: 640px; }
   }
   @media (min-width: 900px) {
     #shell { max-width: 760px; }
@@ -174,17 +173,10 @@
     .content { padding-left: 22px; padding-right: 22px; }
     .field-2col { grid-template-columns: repeat(4, 1fr); }
     .sheet-body { padding-left: 24px; padding-right: 24px; }
-    .sheet { max-width: 820px; }
   }
   @media (min-width: 1280px) {
     #shell { max-width: 920px; }
     .tab-bar, .action-bar-inner { max-width: 920px; }
-    .sheet { max-width: 980px; }
-  }
-  @media (min-width: 1600px) {
-    .sheet { max-width: 1180px; }
-    .field-2col { grid-template-columns: repeat(6, 1fr); }
-    .field-3col { grid-template-columns: repeat(6, 1fr); }
   }
 
   /* Header */
@@ -348,6 +340,15 @@
     width: 100%; max-width: 480px; margin: 0 auto;
     background: var(--paper); border-top-left-radius: 22px; border-top-right-radius: 22px;
     display: flex; flex-direction: column; box-shadow: 0 -8px 30px rgba(0,0,0,0.35);
+  }
+  /* ✦ الشيت ياخد عرض أوسع بكتير على الشاشات الكبيرة، مستقل عن عرض حاوية التطبيق نفسها */
+  @media (min-width: 640px) { .sheet { max-width: 640px; } }
+  @media (min-width: 900px) { .sheet { max-width: 820px; } }
+  @media (min-width: 1280px) { .sheet { max-width: 980px; } }
+  @media (min-width: 1600px) {
+    .sheet { max-width: 1180px; }
+    .field-2col { grid-template-columns: repeat(6, 1fr); }
+    .field-3col { grid-template-columns: repeat(6, 1fr); }
   }
   .sheet-grip-wrap { display: flex; justify-content: center; padding-top: 10px; }
   .sheet-grip { width: 40px; height: 4px; border-radius: 99px; background: var(--ink-20); }
@@ -514,7 +515,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-18-01";
+const APP_VERSION = "2026-07-20-30";
 
 /* ===============================================================
    Firebase Config
