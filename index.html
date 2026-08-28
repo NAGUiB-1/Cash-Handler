@@ -515,7 +515,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-07-20-30";
+const APP_VERSION = "2026-8-28-01";
 
 /* ===============================================================
    Firebase Config
@@ -655,7 +655,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({'&':'&am
 /* ===============================================================
    Domain model
    =============================================================== */
-const WALLET_IDS = ["w1","w2","w3","w4"];
+function getWalletIds() { return Object.keys(state.walletNames || {}); }
 const WALLET_LIMIT_TOTAL = 200000;
 const FAWRY_SUBS = ["مدفوعات", "خدمات موبايل", "فيزا"];
 const FAWRY_NO_NEGATIVE_EXEMPT = "مدفوعات";
@@ -1564,7 +1564,7 @@ function renderTabBar() {
   const items = [
     { key: "today", label: "اليوم", i: "store", dot: state.dayData.status === "open" },
     { key: "archive", label: "الأرشيف", i: "archive" },
-    { key: "services", label: "الخدمات", i: "settings" },
+    { key: "services", label: "الاعدادات", i: "settings" },
   ];
   return `
     <div class="tab-bar-wrap">
@@ -1650,9 +1650,10 @@ function renderBalancesGrid(live) {
       ${sectionHeader("wallets", "المحافظ الإلكترونية")}
       ${c.wallets ? `<div class="balance-collapsed-hint">المحافظ مخفية</div>` : `
         <div class="balance-row2" style="margin-bottom:8px;">
-          ${WALLET_IDS.map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id], id)).join("")}
+          ${getWalletIds().map(id => balanceCard("wallet", state.walletNames[id], live.wallets[id], id)).join("")}
         </div>
         ${walletCommissionsInfoCard()}
+        ${instapayCommissionsInfoCard()}
       `}
 
       ${state.machines.length ? `
@@ -1853,13 +1854,13 @@ function islamCard(value) {
 
 /* ✦ NEW: كارت معلوماتي بس لعرض إجمالي عمولات المحافظ المتحصلة النهاردة — مش مربوط بالتقفيل ولا أي استعلام، مجرد عرض */
 function walletCommissionsInfoCard() {
-  const totals = Object.fromEntries(WALLET_IDS.map(id => [id, 0]));
+  const totals = Object.fromEntries(getWalletIds().map(id => [id, 0]));
   (state.dayData.transactions || []).forEach(t => {
     if (t.category === "vodafone" && t.walletId && num(t.commission) > 0) {
       totals[t.walletId] = (totals[t.walletId] || 0) + num(t.commission);
     }
   });
-  const anySet = WALLET_IDS.some(id => totals[id] > 0);
+  const anySet = getWalletIds().some(id => totals[id] > 0);
   return `
     <div class="balance-card" style="width:100%; margin-bottom:8px;">
       <div class="balance-card-top">${icon("landmark", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">عمولات المحافظ اليوم</div></div>
@@ -1867,12 +1868,45 @@ function walletCommissionsInfoCard() {
         <div style="font-size:13px; color:var(--ink-60); font-weight:600;">مفيش عمولات متسجلة للمحافظ النهاردة</div>
       ` : `
         <div style="display:flex; flex-direction:column; gap:6px;">
-          ${WALLET_IDS.map(id => {
+          ${getWalletIds().map(id => {
             const comm = totals[id];
             if (comm <= 0) return "";
             return `
               <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">
                 <span style="font-size:13px; color:var(--ink);">${esc(state.walletNames[id])}</span>
+                <span class="num" style="font-size:13.5px; font-weight:700; color:var(--gold);">${money(comm)} ج.م</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+/* ✦ NEW: كارت معلوماتي بس لعرض إجمالي عمولات انستاباي المتحصلة النهاردة — بنفس فكرة كارت عمولات المحافظ بالظبط */
+function instapayCommissionsInfoCard() {
+  const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const totals = Object.fromEntries(ipAccounts.map(acc => [acc.id, 0]));
+  (state.dayData.transactions || []).forEach(t => {
+    if (t.category === "instapay" && t.instapayAccountId && num(t.commission) > 0) {
+      totals[t.instapayAccountId] = (totals[t.instapayAccountId] || 0) + num(t.commission);
+    }
+  });
+  const anySet = ipAccounts.some(acc => totals[acc.id] > 0);
+  return `
+    <div class="balance-card" style="width:100%; margin-bottom:8px;">
+      <div class="balance-card-top">${icon("smartphone", {size:13, color:"var(--ink-40)"})}<div class="balance-card-label">عمولات انستاباي اليوم</div></div>
+      ${!anySet ? `
+        <div style="font-size:13px; color:var(--ink-60); font-weight:600;">مفيش عمولات متسجلة لانستاباي النهاردة</div>
+      ` : `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${ipAccounts.map(acc => {
+            const comm = totals[acc.id];
+            if (comm <= 0) return "";
+            return `
+              <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">
+                <span style="font-size:13px; color:var(--ink);">${esc(acc.name)}</span>
                 <span class="num" style="font-size:13.5px; font-weight:700; color:var(--gold);">${money(comm)} ج.م</span>
               </div>
             `;
@@ -2153,7 +2187,7 @@ function renderClosedStamp(closing, live, closedBy) {
   const diffs = [
     num(closing.drawer) - live.drawer,
     num(closing.machineDrawer) - live.machineDrawer,
-    ...WALLET_IDS.map(id => num(closing.wallets?.[id]) - live.wallets[id]),
+    ...getWalletIds().map(id => num(closing.wallets?.[id]) - live.wallets[id]),
     ...ipDiffs,
     ...machineDiffs,
     ...machineDebtDiffs,
@@ -2343,7 +2377,7 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
   const balanceRows = [];
   balanceRows.push(["الدرج (كاش)", money(live.drawer)]);
   balanceRows.push(["الدرج (مكن)", money(live.machineDrawer)]);
-  WALLET_IDS.forEach(id => balanceRows.push([state.walletNames[id], money(live.wallets[id])]));
+  getWalletIds().forEach(id => balanceRows.push([state.walletNames[id], money(live.wallets[id])]));
   ipAccounts.forEach(acc => balanceRows.push([acc.name, money(num(live.instapayAccounts?.[acc.id] ?? 0))]));
   state.machines.forEach(m => {
     const subs = machineSubs(m);
@@ -2379,7 +2413,7 @@ function buildReportHtml(dayKey, dayData, live, profitTotal, commissionTotal, tx
     const rows = [];
     rows.push(["الدرج (كاش)", live.drawer, num(c.drawer), "drawer_cash"]);
     rows.push(["الدرج (مكن)", live.machineDrawer, num(c.machineDrawer), "drawer_machine"]);
-    WALLET_IDS.forEach(id => rows.push([state.walletNames[id], live.wallets[id], num(c.wallets?.[id]), "wallet"]));
+    getWalletIds().forEach(id => rows.push([state.walletNames[id], live.wallets[id], num(c.wallets?.[id]), "wallet"]));
     ipAccounts.forEach(acc => rows.push([acc.name, num(live.instapayAccounts?.[acc.id] ?? 0), num(c.instapayAccounts?.[acc.id] ?? c.instapay ?? 0), "instapay"]));
     state.machines.forEach(m => {
       const subs = machineSubs(m);
@@ -2652,7 +2686,7 @@ function renderStartSheet() {
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
     <div class="field-2col">
-      ${WALLET_IDS.map(id => `
+      ${getWalletIds().map(id => `
         <div class="field">
           <div class="field-label">${esc(state.walletNames[id])}</div>
           <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-wallet-${id}">
@@ -2722,7 +2756,7 @@ function submitStartDay() {
   const opening = {
     drawer: num(document.getElementById("sd-drawer").value),
     machineDrawer: num(document.getElementById("sd-machineDrawer").value),
-    wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
+    wallets: Object.fromEntries(getWalletIds().map(id => [id, num(document.getElementById(`sd-wallet-${id}`).value)])),
     instapay: 0, // legacy compat
     instapayAccounts: instapayAccountsData,
     machines: Object.fromEntries(state.machines.map(m => {
@@ -2829,7 +2863,7 @@ function renderEditOpeningSheet() {
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
     <div class="field-2col">
-      ${WALLET_IDS.map(id => `<div class="field"><div class="field-label">${esc(state.walletNames[id])}</div><input type="number" inputmode="decimal" class="input" value="${o.wallets?.[id] || ''}" id="eo-wallet-${id}"></div>`).join("")}
+      ${getWalletIds().map(id => `<div class="field"><div class="field-label">${esc(state.walletNames[id])}</div><input type="number" inputmode="decimal" class="input" value="${o.wallets?.[id] || ''}" id="eo-wallet-${id}"></div>`).join("")}
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">حسابات انستاباي</div>
     <div class="${ipAccounts.length > 1 ? 'field-2col' : ''}">
@@ -2881,7 +2915,7 @@ function submitEditOpening() {
   const opening = {
     drawer: num(document.getElementById("eo-drawer").value),
     machineDrawer: num(document.getElementById("eo-machineDrawer").value),
-    wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`eo-wallet-${id}`).value)])),
+    wallets: Object.fromEntries(getWalletIds().map(id => [id, num(document.getElementById(`eo-wallet-${id}`).value)])),
     instapay: 0,
     instapayAccounts: instapayAccountsData,
     machines: Object.fromEntries(state.machines.map(m => {
@@ -3226,7 +3260,7 @@ function renderTxSheetBody() {
       <div class="field">
         <div class="field-label">المحفظة</div>
         <div class="chip-row wrap">
-          ${WALLET_IDS.map(id => `
+          ${getWalletIds().map(id => `
             <button class="chip-btn small ${f.walletId===id?'active':''}" onclick="txSelectWallet('${id}')">${esc(state.walletNames[id])}</button>
           `).join("")}
         </div>
@@ -3236,7 +3270,7 @@ function renderTxSheetBody() {
 
   if (f.category === "machine") {
     if (state.machines.length === 0) {
-      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الخدمات" وضيف المكينة الأول.</div>`;
+      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الاعدادات" وضيف المكينة الأول.</div>`;
     } else {
       html += `
         <div class="field">
@@ -3271,7 +3305,7 @@ function renderTxSheetBody() {
   /* ✦ NEW: إضافة مديونية مكينة */
   if (f.category === "machineDebt") {
     if (state.machines.length === 0) {
-      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الخدمات" وضيف المكينة الأول.</div>`;
+      html += `<div class="warn-box">لسه مفيش مكن مضافة. روح لتاب "الاعدادات" وضيف المكينة الأول.</div>`;
     } else {
       if (!f.debtMachineId) f.debtMachineId = state.machines[0].id;
       html += `
@@ -3336,7 +3370,7 @@ function renderTxSheetBody() {
   if (f.category === "fawrySettlement") {
     const fawryMachines = state.machines.filter(m => machineSubs(m));
     if (fawryMachines.length === 0) {
-      html += `<div class="warn-box">لسه مفيش مكينة "فوري" مضافة. روح لتاب "الخدمات" وضيفها الأول.</div>`;
+      html += `<div class="warn-box">لسه مفيش مكينة "فوري" مضافة. روح لتاب "الاعدادات" وضيفها الأول.</div>`;
     } else {
       if (!f.debtMachineId || !fawryMachines.some(m => m.id === f.debtMachineId)) f.debtMachineId = fawryMachines[0].id;
       if (fawryMachines.length > 1) {
@@ -3810,7 +3844,7 @@ function renderCloseSheetBody() {
   `;
   html += row("الدرج (كاش)", live.drawer, "cd-drawer", "cd-diff-drawer", "closeRowInputChanged('drawer')");
   html += row("الدرج (مكن)", live.machineDrawer, "cd-machineDrawer", "cd-diff-machineDrawer", "closeRowInputChanged('machineDrawer')");
-  WALLET_IDS.forEach(id => {
+  getWalletIds().forEach(id => {
     html += row(state.walletNames[id], live.wallets[id], `cd-wallet-${id}`, `cd-diff-wallet-${id}`, `closeRowInputChanged('wallet','${id}')`);
   });
   /* ✦ NEW: جرد كل حساب انستاباي على حدة */
@@ -3849,7 +3883,7 @@ function submitCloseDay() {
   const closing = {
     drawer: num(document.getElementById("cd-drawer").value),
     machineDrawer: num(document.getElementById("cd-machineDrawer").value),
-    wallets: Object.fromEntries(WALLET_IDS.map(id => [id, num(document.getElementById(`cd-wallet-${id}`).value)])),
+    wallets: Object.fromEntries(getWalletIds().map(id => [id, num(document.getElementById(`cd-wallet-${id}`).value)])),
     instapay: 0,
     instapayAccounts: instapayAccountsData,
     machines: Object.fromEntries(state.machines.map(m => {
@@ -3958,6 +3992,52 @@ function saveInstapayName(id) {
 }
 
 /* ===============================================================
+   ✦ NEW: Add Wallet Sheet
+   =============================================================== */
+function openAddWalletSheet() {
+  if (!requireEdit()) return;
+  state.sheet = "addWallet";
+  render();
+}
+function renderAddWalletSheetBody() {
+  return `<div class="field"><div class="field-label">اسم المحفظة</div><input type="text" class="input" placeholder="مثال: محفظة اورانج" id="aw-name" autofocus oninput="updateAddWalletBtn()"></div>`;
+}
+function updateAddWalletBtn() {
+  const val = (document.getElementById("aw-name")?.value || "").trim();
+  const btn = document.getElementById("aw-submit-btn");
+  if (btn) btn.disabled = !val;
+}
+function submitAddWallet() {
+  if (!requireEdit()) return;
+  const name = (document.getElementById("aw-name")?.value || "").trim();
+  if (!name) return;
+  const id = genId();
+  state.walletNames = { ...state.walletNames, [id]: name };
+  saveWalletNames(state.walletNames);
+  state.walletLimits = { ...state.walletLimits, [id]: 0 };
+  saveWalletLimits(state.walletLimits);
+  state.walletCommissions = { ...state.walletCommissions, [id]: 0 };
+  saveWalletCommissions(state.walletCommissions);
+  state.sheet = null; render();
+}
+function confirmDeleteWallet(id, name) {
+  if (!requireEdit()) return;
+  if (getWalletIds().length <= 1) { alert("لازم تفضل محفظة واحدة على الأقل."); return; }
+  if (confirm(`حذف "${name}"؟`)) {
+    const { [id]: _removedName, ...restNames } = state.walletNames;
+    state.walletNames = restNames;
+    saveWalletNames(state.walletNames);
+    const { [id]: _removedLimit, ...restLimits } = state.walletLimits;
+    state.walletLimits = restLimits;
+    saveWalletLimits(state.walletLimits);
+    const { [id]: _removedComm, ...restComm } = state.walletCommissions;
+    state.walletCommissions = restComm;
+    saveWalletCommissions(state.walletCommissions);
+    render();
+  }
+}
+
+/* ===============================================================
    Sheet dispatcher
    =============================================================== */
 function closeSheet() { state.sheet = null; state.txForm = null; state.eoSelectedDate = null; state.archiveDateEdit = null; render(); }
@@ -3980,6 +4060,9 @@ function renderSheet() {
   } else if (state.sheet === "addInstapay") {  // ✦ NEW
     title = "إضافة حساب انستاباي"; body = renderAddInstapaySheetBody();
     footer = `<button class="primary-btn" id="ai-submit-btn" onclick="submitAddInstapay()" disabled>إضافة</button>`;
+  } else if (state.sheet === "addWallet") {  // ✦ NEW
+    title = "إضافة محفظة"; body = renderAddWalletSheetBody();
+    footer = `<button class="primary-btn" id="aw-submit-btn" onclick="submitAddWallet()" disabled>إضافة</button>`;
   } else if (state.sheet === "editOpening") {
     title = "تعديل الأرصدة الافتتاحية"; body = renderEditOpeningSheet();
     footer = `<button class="primary-btn" onclick="submitEditOpening()">حفظ التعديل</button>`;
@@ -4354,9 +4437,12 @@ function renderServicesView() {
     </div>
 
     <!-- المحافظ الإلكترونية -->
-    <div class="archive-title">المحافظ الإلكترونية</div>
+    <div class="services-header-row">
+      <div class="archive-title" style="margin-bottom:0;">المحافظ الإلكترونية</div>
+      ${editable ? `<button class="add-btn" onclick="openAddWalletSheet()">${icon("plus",{size:15})} إضافة</button>` : ""}
+    </div>
     <div class="services-list">
-      ${WALLET_IDS.map(id => `
+      ${getWalletIds().length === 0 ? `<div class="services-empty">لسه مفيش محافظ</div>` : getWalletIds().map(id => `
         <div class="services-row">
           ${icon("wallet",{size:16,color:"var(--ink-60)"})}
           ${state.editingWalletId === id ? `
@@ -4365,6 +4451,7 @@ function renderServicesView() {
           ` : `<div class="services-row-name">${esc(state.walletNames[id])}</div>`}
           ${(editable && state.editingWalletId !== id) ? `
             <button class="icon-btn" onclick="startEditWallet('${id}')">${icon("pencil",{size:14,color:"var(--ink-40)"})}</button>
+            ${getWalletIds().length > 1 ? `<button class="icon-btn" onclick="confirmDeleteWallet('${id}', '${esc(state.walletNames[id]).replace(/'/g,"\\'")}')">${icon("trash-2",{size:14,color:"var(--rust)"})}</button>` : ""}
           ` : ""}
         </div>
       `).join("")}
@@ -4373,7 +4460,7 @@ function renderServicesView() {
     <!-- حدود الإيداع (الليميت) -->
     <div class="archive-title">حدود الإيداع (الليميت) للمحافظ</div>
     <div class="services-list" style="margin-bottom:20px;">
-      ${WALLET_IDS.map(id => {
+      ${getWalletIds().map(id => {
         const used = num(state.walletLimits[id]);
         const remaining = WALLET_LIMIT_TOTAL - used;
         const remColor = remaining < 0 ? "var(--rust)" : "var(--emerald)";
