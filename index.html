@@ -1250,6 +1250,11 @@ function requireEdit() {
   if (!canEdit()) { alert("حسابك في وضع (رؤية فقط) ومش هيقدر يعدّل أو يضيف بيانات."); return false; }
   return true;
 }
+/* ✦ NEW: صفحة الإعدادات وكل ما فيها (مكن/محافظ/انستاباي/ليميت/مستخدمين) للأدمن بس */
+function requireAdmin() {
+  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يوصل لصفحة الإعدادات."); return false; }
+  return true;
+}
 function roleLabel(role) {
   if (role === "admin") return "أدمن";
   if (role === "editor") return "رؤية وتعديل";
@@ -1489,7 +1494,8 @@ function render() {
   if (state.tab === "today") bodyHtml = renderTodayView(live);
   else if (state.tab === "archive" && !state.viewDate) bodyHtml = renderArchiveView();
   else if (state.tab === "archive" && state.viewDate) bodyHtml = renderArchiveDetail();
-  else if (state.tab === "services") bodyHtml = renderServicesView();
+  else if (state.tab === "services" && isAdmin()) bodyHtml = renderServicesView();
+  else if (state.tab === "services" && !isAdmin()) { state.tab = "today"; bodyHtml = renderTodayView(live); }
 
   root.innerHTML = `
     ${renderHeader(state.dayData.status !== "not_started" ? profitTotal : null)}
@@ -1555,6 +1561,10 @@ function renderHeader(profit) {
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:var(--ink-08); border-radius:10px;">
             ${icon("rotate-ccw", {size:17, color:"var(--header-fg)"})}
           </button>` : ""}` : ""}
+        ${!isAdmin() ? `
+        <button class="icon-btn" title="تسجيل الخروج" onclick="logout()" style="background:var(--ink-08); border-radius:10px;">
+          ${icon("log-out", {size:17, color:"var(--header-fg)"})}
+        </button>` : ""}
       </div>
     </div>
   `;
@@ -1564,7 +1574,7 @@ function renderTabBar() {
   const items = [
     { key: "today", label: "اليوم", i: "store", dot: state.dayData.status === "open" },
     { key: "archive", label: "الأرشيف", i: "archive" },
-    { key: "services", label: "الاعدادات", i: "settings" },
+    ...(isAdmin() ? [{ key: "services", label: "الاعدادات", i: "settings" }] : []),
   ];
   return `
     <div class="tab-bar-wrap">
@@ -1582,6 +1592,7 @@ function renderTabBar() {
 }
 
 function setTab(t) {
+  if (t === "services" && !isAdmin()) { return; } // ✦ NEW: منع فتح تاب الإعدادات لغير الأدمن حتى لو اتنادت الفانكشن يدويًا من الكونسول
   if (state.editingArchiveDay && t !== "archive") { exitArchiveEditMode(); }
   state.tab = t;
   state.viewDate = null;
@@ -1612,6 +1623,17 @@ function sectionHeader(key, label, extraRight) {
       </div>
     </div>
   `;
+}
+
+/* ✦ NEW: إجمالي أرصدة كل مكن الشحن مجمّعة مع بعض بإشارتها — فوري بيتجمع فيها الخانات الـ٣ (مدفوعات + خدمات موبايل + فيزا) */
+function computeMachinesTotal(live) {
+  return state.machines.reduce((sum, m) => {
+    const subs = machineSubs(m);
+    if (subs) {
+      return sum + subs.reduce((s2, sub) => s2 + machineBalValue(live.machines[m.id], sub), 0);
+    }
+    return sum + machineBalValue(live.machines[m.id]);
+  }, 0);
 }
 
 function renderBalancesGrid(live) {
@@ -1657,7 +1679,7 @@ function renderBalancesGrid(live) {
       `}
 
       ${state.machines.length ? `
-        ${sectionHeader("machines", "أرصدة مكن الشحن")}
+        ${sectionHeader("machines", "أرصدة مكن الشحن", machinesTotalInline(live))}
         ${c.machines ? `<div class="balance-collapsed-hint">مكن الشحن مخفية</div>` : `
           <div class="balance-row2" style="margin-bottom:8px;">
             ${state.machines.map(m => {
@@ -1718,6 +1740,14 @@ function balanceCard(iconName, label, value, walletId) {
       ${limitHtml}
     </div>
   `;
+}
+
+/* ✦ NEW: إجمالي أرصدة كل مكن الشحن — بيتحط جمب سهم الإظهار/الإخفاء في عنوان القسم */
+function machinesTotalInline(live) {
+  const total = computeMachinesTotal(live);
+  const neg = total < 0;
+  const display = state.balancesHidden ? "••••" : money(total);
+  return `<span class="num" style="font-size:13px; font-weight:700; color:${(neg && !state.balancesHidden) ? 'var(--rust)' : 'var(--ink)'};">${display}</span>`;
 }
 
 function fawryCard(m, live) {
@@ -3923,7 +3953,7 @@ function submitCloseDay() {
 /* ===============================================================
    Add Machine Sheet
    =============================================================== */
-function openAddMachineSheet() { if (!requireEdit()) return; state.sheet = "addMachine"; render(); }
+function openAddMachineSheet() { if (!requireAdmin()) return; state.sheet = "addMachine"; render(); }
 function renderAddMachineSheetBody() {
   return `<div class="field"><div class="field-label">اسم المكينة</div><input type="text" class="input" placeholder="مثال: فوري" id="am-name" autofocus oninput="updateAddMachineBtn()"></div>`;
 }
@@ -3933,7 +3963,7 @@ function updateAddMachineBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddMachine() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   const name = (document.getElementById("am-name")?.value || "").trim();
   if (!name) return;
   state.machines = [...state.machines, { id: genId(), name }];
@@ -3945,7 +3975,7 @@ function submitAddMachine() {
    ✦ NEW: Add Instapay Account Sheet
    =============================================================== */
 function openAddInstapaySheet() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   state.sheet = "addInstapay";
   render();
 }
@@ -3958,7 +3988,7 @@ function updateAddInstapayBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddInstapay() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   const name = (document.getElementById("ai-name")?.value || "").trim();
   if (!name) return;
   state.instapayAccounts = [...(state.instapayAccounts || []), { id: genId(), name }];
@@ -3966,7 +3996,7 @@ function submitAddInstapay() {
   state.sheet = null; render();
 }
 function confirmDeleteInstapay(id, name) {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   if ((state.instapayAccounts || []).length <= 1) { alert("لازم يفضل حساب انستاباي واحد على الأقل."); return; }
   if (confirm(`حذف "${name}"؟`)) {
     state.instapayAccounts = (state.instapayAccounts || []).filter(a => a.id !== id);
@@ -3975,12 +4005,12 @@ function confirmDeleteInstapay(id, name) {
   }
 }
 function startEditInstapay(id) {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   state.editingInstapayId = id;
   render();
 }
 function saveInstapayName(id) {
-  if (!requireEdit()) { state.editingInstapayId = null; render(); return; }
+  if (!requireAdmin()) { state.editingInstapayId = null; render(); return; }
   const el = document.getElementById("instapay-edit-input");
   const name = el ? el.value.trim() : "";
   if (name) {
@@ -3995,7 +4025,7 @@ function saveInstapayName(id) {
    ✦ NEW: Add Wallet Sheet
    =============================================================== */
 function openAddWalletSheet() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   state.sheet = "addWallet";
   render();
 }
@@ -4008,7 +4038,7 @@ function updateAddWalletBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddWallet() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   const name = (document.getElementById("aw-name")?.value || "").trim();
   if (!name) return;
   const id = genId();
@@ -4021,7 +4051,7 @@ function submitAddWallet() {
   state.sheet = null; render();
 }
 function confirmDeleteWallet(id, name) {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   if (getWalletIds().length <= 1) { alert("لازم تفضل محفظة واحدة على الأقل."); return; }
   if (confirm(`حذف "${name}"؟`)) {
     const { [id]: _removedName, ...restNames } = state.walletNames;
@@ -4539,17 +4569,17 @@ function renderUsersSection() {
 }
 
 /* ---- wallet name/limit/commission edit helpers ---- */
-function startEditWallet(id) { if (!requireEdit()) return; state.editingWalletId = id; render(); }
+function startEditWallet(id) { if (!requireAdmin()) return; state.editingWalletId = id; render(); }
 function saveWalletName(id) {
-  if (!requireEdit()) { state.editingWalletId = null; render(); return; }
+  if (!requireAdmin()) { state.editingWalletId = null; render(); return; }
   const el = document.getElementById("wallet-edit-input");
   const name = el ? el.value.trim() : "";
   if (name) { state.walletNames = { ...state.walletNames, [id]: name }; saveWalletNames(state.walletNames); }
   state.editingWalletId = null; render();
 }
-function startEditWalletLimit(id) { if (!requireEdit()) return; state.editingWalletLimitId = id; render(); }
+function startEditWalletLimit(id) { if (!requireAdmin()) return; state.editingWalletLimitId = id; render(); }
 function saveWalletLimitUsed(id) {
-  if (!requireEdit()) { state.editingWalletLimitId = null; render(); return; }
+  if (!requireAdmin()) { state.editingWalletLimitId = null; render(); return; }
   const el = document.getElementById("wl-limit-input-" + id);
   const used = el ? num(el.value) : num(state.walletLimits[id]);
   state.walletLimits = { ...state.walletLimits, [id]: used };
@@ -4557,7 +4587,7 @@ function saveWalletLimitUsed(id) {
   state.editingWalletLimitId = null; render();
 }
 function confirmDeleteMachine(id, name) {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   if (confirm(`حذف "${name}"؟`)) { state.machines = state.machines.filter(m => m.id !== id); saveMachines(state.machines); render(); }
 }
 
