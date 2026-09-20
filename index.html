@@ -515,7 +515,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-9-20-01";
+const APP_VERSION = "2026-8-28-01";
 
 /* ===============================================================
    Firebase Config
@@ -3082,7 +3082,7 @@ function openTxSheet(txId) {
     time: initial?.time || null,
     category: initial?.category || "vodafone",
     subtype: initial?.subtype || "سحب",
-    walletId: initial?.walletId || "w1",
+    walletId: initial?.walletId || null,
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
     machineSub: initial?.machineSub || null,
     debtMachineId: initial?.machineId || (state.machines[0]?.id || ""), // ✦ NEW: للمديونية وسدادها
@@ -3792,6 +3792,8 @@ function submitTx() {
   if (f.category !== "fawrySettlement" && !isFawryDebt && !(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
   if (isFawryDebt && !(num(f.debtMadfoat) > 0 || num(f.debtKhadamat) > 0)) { alert("اكتب مبلغ في خانة المدفوعات أو خدمات موبايل على الأقل."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
+  if (f.category === "vodafone" && !f.walletId) { alert("برجاء اختيار المحفظة — لا يمكن إتمام المعاملة بدون تحديد المحفظة."); return; }
+  if (f.category === "instapay" && !f.instapayAccountId) { alert("برجاء اختيار حساب انستاباي — لا يمكن إتمام المعاملة بدون تحديده."); return; }
   const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
   const selSubs = selMachine ? machineSubs(selMachine) : null;
   if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
