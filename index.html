@@ -637,12 +637,63 @@ function displayDate(key){
   const dt = new Date(y, m-1, d);
   return `${AR_DAYS[dt.getDay()]} ${d} ${AR_MONTHS[m-1]} ${y}`;
 }
-function timeNow(){
-  const d = new Date();
-  let h = d.getHours(); const m = pad(d.getMinutes());
+/* ===============================================================
+   ✦ NEW: توقيت موحّد (بتوقيت القاهرة) مبني على ساعة سيرفر Firebase
+   بدل ساعة جهاز المستخدم — عشان كل المعاملات من أي موبايل تتسجل
+   بنفس التوقيت الحقيقي حتى لو ساعة الجهاز غلط.
+   =============================================================== */
+let __serverTimeOffsetMs = 0; // الفرق بين وقت السيرفر ووقت الجهاز (بالميلي ثانية)
+let __serverTimeSynced = false;
+
+/* بيقيس الفرق بين ساعة السيرفر وساعة الجهاز عن طريق كتابة serverTimestamp في مستند صغير مخصص لده وقراءته فورًا */
+function syncServerTime() {
+  if (!db) return Promise.resolve();
+  const ref = db.collection("meta").doc("serverClock");
+  const beforeMs = Date.now();
+  return ref.set({ t: firebase.firestore.FieldValue.serverTimestamp() })
+    .then(() => ref.get({ source: "server" }))
+    .then(snap => {
+      const afterMs = Date.now();
+      const serverMs = snap.exists && snap.data().t ? snap.data().t.toMillis() : null;
+      if (serverMs) {
+        // نعوّض زمن الرحلة (round-trip) بمتوسط وقت الإرسال والاستلام
+        const roundTripMid = beforeMs + (afterMs - beforeMs) / 2;
+        __serverTimeOffsetMs = serverMs - roundTripMid;
+        __serverTimeSynced = true;
+      }
+    })
+    .catch(err => { console.warn("syncServerTime failed", err); });
+}
+
+/* الوقت الحالي الحقيقي (متزامن مع السيرفر) كـ epoch ms — ده اللي بيتسجل في كل معاملة */
+function serverNowMs() {
+  return Date.now() + __serverTimeOffsetMs;
+}
+
+/* نص عرض الوقت (ساعة:دقيقة ص/م) — دايمًا بتوقيت القاهرة بغض النظر عن توقيت الجهاز أو منطقته */
+function formatTimeCairo(ms) {
+  if (!ms) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit", hour12: false
+  }).formatToParts(new Date(ms));
+  const get = t => parts.find(p => p.type === t)?.value || "0";
+  let h = parseInt(get("hour"), 10);
+  const m = get("minute");
   const ampm = h >= 12 ? "م" : "ص";
   h = h % 12; if (h === 0) h = 12;
   return `${h}:${m} ${ampm}`;
+}
+/* وقت اليوم الحالي (نص) بتوقيت القاهرة، متزامن مع السيرفر */
+function timeNow(){
+  return formatTimeCairo(serverNowMs());
+}
+/* ✦ مفتاح اليوم (تاريخ) بتوقيت القاهرة، متزامن مع السيرفر — عشان اليوم مايتغيّرش بسبب توقيت الجهاز */
+function dateKeyNowCairo() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date(serverNowMs()));
+  const get = t => parts.find(p => p.type === t)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
 }
 function genId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 function num(v){ const n = parseFloat(v); return isNaN(n) ? 0 : n; }
@@ -1170,9 +1221,18 @@ async function bootApp(retryCount) {
         state.authUser = user;
         state.authChecked = true;
         state.loginSubmitting = false;
-        if (user) { attachRealtimeListeners(); loadUserProfile(user); }
+        if (user) {
+          attachRealtimeListeners();
+          loadUserProfile(user);
+          syncServerTime(); // ✦ NEW: زامن ساعة السيرفر أول ما يسجّل دخول
+        }
         else { state.userProfile = null; state.userProfileReady = false; }
         render();
+      });
+      // ✦ NEW: أعد المزامنة كل 5 دقايق (ولما التاب يرجع نشط) عشان التوقيت يفضل دقيق طول الوقت
+      setInterval(() => { if (state.authUser) syncServerTime(); }, 5 * 60 * 1000);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && state.authUser) syncServerTime();
       });
     }
     state.connectionError = null;
@@ -1561,10 +1621,9 @@ function renderHeader(profit) {
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:var(--ink-08); border-radius:10px;">
             ${icon("rotate-ccw", {size:17, color:"var(--header-fg)"})}
           </button>` : ""}` : ""}
-        ${!isAdmin() ? `
         <button class="icon-btn" title="تسجيل الخروج" onclick="logout()" style="background:var(--ink-08); border-radius:10px;">
           ${icon("log-out", {size:17, color:"var(--header-fg)"})}
-        </button>` : ""}
+        </button>
       </div>
     </div>
   `;
@@ -3806,7 +3865,7 @@ function submitTx() {
 
   let txs;
   if (tx.id) txs = state.dayData.transactions.map(t => t.id === tx.id ? { ...tx } : t);
-  else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: timeNow() }];
+  else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: formatTimeCairo(serverNowMs()), timeMs: serverNowMs() }];
 
   if (tx.category === "machine" && !validateMachineBalances(txs)) {
     alert("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح.");
