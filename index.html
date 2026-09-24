@@ -515,7 +515,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-9-24-01";
+const APP_VERSION = "2026-9-24-02";
 
 /* ===============================================================
    ✦ NEW: فحص اتصال إنترنت إجباري — التطبيق ميشتغلش (ولا حتى يعرض واجهة تسجيل الدخول)
@@ -557,9 +557,8 @@ async function checkConnectivity() {
     if (__isOnline && wasOnline === false) {
       onConnectivityRestored();
     }
-  } else if (__isOnline) {
-    render();
   }
+  // (اتشال الريندر الدوري هنا — كان بيمسح الحقول كل 5 ثواني)
 }
 
 /* لما النت يرجع بعد انقطاع، لازم نعيد تحميل كل حاجة من الصفر بدل ما نعتمد على listeners ممكن تكون اتقطعت بصمت */
@@ -1757,7 +1756,62 @@ function tint15(color) {
 /* ===============================================================
    Render dispatch
    =============================================================== */
+/* ✦ حفظ/استرجاع حالة الواجهة (قيم الحقول + الفوكس + السكرول) حوالين أي render */
+let __lastRenderedSheet = null;
+
+function captureUiState() {
+  const snap = { sheet: __lastRenderedSheet, fields: {}, focusId: null, selStart: null, selEnd: null,
+                 winY: window.scrollY, sheetScroll: 0 };
+  const sb = document.getElementById("sheet-body");
+  if (sb) snap.sheetScroll = sb.scrollTop;
+  document.querySelectorAll("#shell input[id], #shell select[id], #shell textarea[id]").forEach(el => {
+    snap.fields[el.id] = (el.type === "checkbox" || el.type === "radio") ? { checked: el.checked } : { value: el.value };
+  });
+  const ae = document.activeElement;
+  if (ae && ae.id) {
+    snap.focusId = ae.id;
+    try { snap.selStart = ae.selectionStart; snap.selEnd = ae.selectionEnd; } catch (e) {}
+  }
+  return snap;
+}
+
+function restoreUiState(snap) {
+  if (snap.sheet === state.sheet) {
+    Object.keys(snap.fields).forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const s = snap.fields[id];
+      if ("checked" in s) el.checked = s.checked;
+      else if (el.value !== s.value) el.value = s.value;
+    });
+    const sb = document.getElementById("sheet-body");
+    if (sb) sb.scrollTop = snap.sheetScroll;
+    if (snap.focusId) {
+      const el = document.getElementById(snap.focusId);
+      if (el) {
+        el.focus({ preventScroll: true });
+        try { if (snap.selStart != null) el.setSelectionRange(snap.selStart, snap.selEnd); } catch (e) {}
+      }
+    }
+  }
+  window.scrollTo(0, snap.winY);
+  __lastRenderedSheet = state.sheet;
+}
+
 function render() {
+  const ae = document.activeElement;
+  if (state.sheet && ae && ae.matches && ae.matches("#sheet-body input, #sheet-body select, #sheet-body textarea")) {
+    // المستخدم بيكتب — أجّل الريندر لحد ما يخلص
+    clearTimeout(window.__deferRender);
+    window.__deferRender = setTimeout(render, 1500);
+    return;
+  }
+  const snap = captureUiState();
+  _renderCore();
+  restoreUiState(snap);
+}
+
+function _renderCore() {
   const root = document.getElementById("shell");
   /* ✦ NEW: مفيش نت = مفيش تطبيق خالص. ده أول فحص قبل أي حاجة تانية (حتى قبل شاشة تسجيل الدخول)
      عشان نمنع أي عملية أو حتى عرض بيانات قديمة وهمية وقت انقطاع النت. */
