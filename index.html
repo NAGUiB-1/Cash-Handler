@@ -515,7 +515,66 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-8-28-01";
+const APP_VERSION = "2026-9-28-03";
+
+/* ===============================================================
+   ✦ NEW: فحص اتصال إنترنت إجباري — التطبيق ميشتغلش (ولا حتى يعرض واجهة تسجيل الدخول)
+   غير لو النت متأكد إنه شغال فعليًا. navigator.onLine وحده مش موثوق (بيرجع true أحيانًا
+   حتى لو مفيش نت فعلي)، فبنعمل طلب شبكة خفيف فعلي للتأكد.
+   =============================================================== */
+let __isOnline = navigator.onLine;
+let __connectivityCheckInFlight = false;
+
+/* طلب شبكة خفيف جدًا (بدون كاش) للتأكد إن الإنترنت شغال فعليًا مش بس إن الجهاز "متصل بشبكة" */
+async function verifyRealConnectivity() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    // نستخدم رابط جوجل الخفيف المخصص لفحص الاتصال (بيرجع استجابة فورية وصغيرة جدًا)
+    await fetch("https://www.gstatic.com/generate_204", { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+    clearTimeout(t);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function checkConnectivity() {
+  if (__connectivityCheckInFlight) return;
+  __connectivityCheckInFlight = true;
+  const wasOnline = __isOnline;
+  // الخطوة الأولى: لو المتصفح نفسه بيقول أوفلاين، صدّقه فورًا (ده مؤشر أكيد)
+  if (!navigator.onLine) {
+    __isOnline = false;
+  } else {
+    // الخطوة الثانية: تأكيد فعلي بطلب شبكة حقيقي
+    __isOnline = await verifyRealConnectivity();
+  }
+  __connectivityCheckInFlight = false;
+  if (__isOnline !== wasOnline) {
+    render();
+    // ✦ لو النت رجع بعد ما كان قاطع، أعد ربط كل الـ listeners والمزامنة من جديد عشان نضمن بيانات حديثة تمامًا
+    if (__isOnline && wasOnline === false) {
+      onConnectivityRestored();
+    }
+  }
+  // (اتشال الريندر الدوري هنا — كان بيمسح الحقول كل 5 ثواني)
+}
+
+/* لما النت يرجع بعد انقطاع، لازم نعيد تحميل كل حاجة من الصفر بدل ما نعتمد على listeners ممكن تكون اتقطعت بصمت */
+function onConnectivityRestored() {
+  if (!state.authUser) { render(); return; }
+  location.reload();
+}
+
+// فحص فوري عند بدء التطبيق
+checkConnectivity();
+// فحص دوري كل 5 ثواني (خفيف ومناسب لحاجة حرجة زي دي)
+setInterval(checkConnectivity, 5000);
+// فحص فوري عند أي تغيير في حالة الاتصال يبلّغ عنها المتصفح
+window.addEventListener("online", checkConnectivity);
+window.addEventListener("offline", () => { __isOnline = false; render(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkConnectivity(); });
 
 /* ===============================================================
    Firebase Config
@@ -549,37 +608,561 @@ function reportSaveError(msg) {
 }
 
 /* ---- Firestore helpers ---- */
-function saveMachines(machines) {
-  if (!db) return;
-  db.collection("meta").doc("machines").set({ list: machines })
-    .catch(err => reportSaveError("فشل حفظ بيانات المكن: " + (err.message || err.code)));
+/* ✦ FIX (حماية الـ IDs): كل الكتابات على مستندات الميتا (المكن/المحافظ/انستاباي/الليميت/العمولات)
+   بقت في Firestore Transaction مع مقارنة النسخة اللي بنينا عليها التعديل (base) بالنسخة الموجودة
+   فعليًا على السيرفر. ده يمنع الجهاز القديم/اللي فتح الصفحة من زمن إنه يكتب قايمة قديمة فوق
+   القايمة الحقيقية — وده كان السبب الجذري في توليد IDs جديدة واختفاء الأرصدة المرتبطة بالقديمة.
+   - base === undefined: كتابة بدون شرط (للاستخدامات الداخلية الآمنة فقط)
+   - base === null: يُشترط أن المستند غير موجود أصلًا على السيرفر
+   - base = قيمة: لازم نسخة السيرفر تطابقها حرفيًا، وإلا يتم رفض الكتابة والتنبيه
+   بترجع Promise<boolean> — true بس لما الكتابة تكون اتسجلت فعليًا على السيرفر. */
+function saveMetaDocWithBase(docPath, payload, base, kindLabel, emptyGuard) {
+  if (!db) return Promise.resolve(false);
+  if (emptyGuard && (payload == null || (Array.isArray(payload) && payload.length === 0) ||
+      (!Array.isArray(payload) && typeof payload === "object" && Object.keys(payload).length === 0))) {
+    return Promise.resolve(false); // ✦ ممنوع نكتب بيانات فاضية فوق البيانات الحقيقية
+  }
+  const ref = db.collection("meta").doc(docPath);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const serverVal = snap.exists ? snap.data() : null;
+    if (base !== undefined) {
+      let mismatch = false;
+      if (base === null) mismatch = (serverVal !== null);
+      else {
+        const serverNorm = JSON.stringify(serverVal == null ? (Array.isArray(base) ? [] : {}) : serverVal);
+        if (serverNorm !== JSON.stringify(base)) mismatch = true;
+      }
+      if (mismatch) {
+        const err = new Error("meta-conflict");
+        err.code = "meta-conflict";
+        err.kind = kindLabel;
+        throw err;
+      }
+    }
+    tx.set(ref, payload);
+    return true;
+  }).catch(err => {
+    if (err && err.code === "meta-conflict") {
+      alert(`بيانات "${kindLabel}" اتغيّرت من جهاز تاني بعد ما فتحت الصفحة. تم إلغاء التعديل عشان ميتشالش ولا يتغير أي ID — القائمة المحدثة هتظهر لحظيًا، راجعها وكرر التعديل.`);
+    } else {
+      reportSaveError(`فشل حفظ ${kindLabel}: ` + ((err && (err.message || err.code)) || err));
+    }
+    return false;
+  });
 }
-function saveWalletNames(names) {
-  if (!db) return;
-  db.collection("meta").doc("walletNames").set(names)
-    .catch(err => reportSaveError("فشل حفظ أسماء المحافظ: " + (err.message || err.code)));
+function saveMachines(machines, baseList) {
+  machines = stabilizeMachineIds(machines); // ✦ E33: أي مكينة من غير ID واسمها معروف بترجع بنفس الـ ID القديم — ممنوع توليد ID جديد
+  // ✦ الـ base هنا قايمة المكن نفسها — بنلفها بنفس شكل مستند السيرفر {list}
+  const wrappedBase = (baseList === undefined || baseList === null) ? baseList : { list: baseList };
+  return saveMetaDocWithBase("machines", { list: machines }, wrappedBase, "قائمة المكن", true);
 }
-function saveWalletLimits(limits) {
-  if (!db) return;
-  db.collection("meta").doc("walletLimits").set(limits)
-    .catch(err => reportSaveError("فشل حفظ حدود المحافظ (الليميت): " + (err.message || err.code)));
+function saveWalletNames(names, baseNames) {
+  return saveMetaDocWithBase("walletNames", names, baseNames, "أسماء المحافظ", true);
+}
+function saveWalletLimits(limits, baseLimits) {
+  return saveMetaDocWithBase("walletLimits", limits, baseLimits, "حدود المحافظ (الليميت)", false);
 }
 /* ✦ NEW: حفظ حسابات انستاباي */
-function saveInstapayAccounts(accounts) {
-  if (!db) return;
-  db.collection("meta").doc("instapayAccounts").set({ list: accounts })
-    .catch(err => reportSaveError("فشل حفظ حسابات انستاباي: " + (err.message || err.code)));
+function saveInstapayAccounts(accounts, baseAccounts) {
+  return saveMetaDocWithBase("instapayAccounts", { list: accounts }, (baseAccounts === undefined ? undefined : (baseAccounts === null ? null : { list: baseAccounts })), "حسابات انستاباي", true);
 }
 /* ✦ NEW: حفظ عمولات المحافظ */
-function saveWalletCommissions(commissions) {
-  if (!db) return;
-  db.collection("meta").doc("walletCommissions").set(commissions)
-    .catch(err => reportSaveError("فشل حفظ عمولات المحافظ: " + (err.message || err.code)));
+function saveWalletCommissions(commissions, baseCommissions) {
+  return saveMetaDocWithBase("walletCommissions", commissions, baseCommissions, "عمولات المحافظ", false);
 }
-function persistDay(key, data) {
+/* ================================================================
+   ✦ NEW (E31): الربط التصحيحي التلقائي للمعرّفات القديمة (Auto-Remapping)
+   ------------------------------------------------------------
+   المشكلة: أرصدة مسجّلة في مستندات الأيام تحت IDs قديمة (مكن/محافظ اتغيرت
+   قايمتها) — كانت بتظهر "معلّقة" وبتعمل تنبيهات وتعارض في الحساب.
+
+   الحل الآمن (بدون أي تخمين وبدون المساس بالبيانات الأصلية):
+   1) كاش محلي (localStorage) بيحفظ آخر قايمة مكن/محافظ/انستاباي معروفة —
+      ده "دليل الاسم": لو ID قديم كان اسمه "فوري" في آخر قايمة معروفة،
+      والقايمة الحالية فيها مكينة واحدة بس اسمها "فوري" → ربط مثبت بالدليل.
+   2) الربط بيتخزن في مستند meta/idMappings (مشافقش ولا بيغير مستندات الأيام).
+   3) البيانات بتتربط في الذاكرة وقت العرض/الحساب فقط — مستندات الأيام
+      على السيرفر بتفضل بأرصادتها الأصلية تحت الـ IDs الأصلية (قابل للتراجع 100%).
+   4) ممنوع الربط لو: الاسم مش موجود في الكاش، أو فيه أكتر من مرشح بنفس
+      الاسم، أو المكينة الحالية عندها رصيد فعلي بالفعل في نفس اليوم (تعارض).
+   ================================================================ */
+const META_CACHE_KEY = "sc_meta_cache_v1";
+function loadMetaCache() {
+  try { return JSON.parse(localStorage.getItem(META_CACHE_KEY) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function saveMetaCacheSnapshot() {
+  try {
+    const c = loadMetaCache();
+    /* ✦ كاش تراكمي: القايمة الحالية بتحدّث أسماء الـ IDs الحالية، والـ IDs اللي
+       اختفت من القايمة بتفضل محفوظة باسمها الأخير — ده "دليل الاسم" للربط التصحيحي
+       ولإرجاع نفس الـ ID لو المكينة اتحذفت واترجعت بنفس الاسم */
+    const mergeList = (cur, next) => {
+      const seen = new Set();
+      const out = [];
+      (next || []).forEach(m => { if (m && m.id) { seen.add(m.id); out.push({ id: m.id, name: m.name }); } });
+      (cur || []).forEach(m => { if (m && m.id && !seen.has(m.id)) out.push(m); }); // القديم بيفضل
+      return out.slice(0, 300);
+    };
+    if (Array.isArray(state.machines) && state.machines.length) c.machines = mergeList(c.machines, state.machines);
+    if (state.walletNames && Object.keys(state.walletNames).length) {
+      const w = Object.assign({}, c.wallets);
+      Object.keys(state.walletNames).forEach(id => { w[id] = state.walletNames[id]; });
+      c.wallets = w; // القديم بيفضل والجديد بيتحدث
+    }
+    if (Array.isArray(state.instapayAccounts) && state.instapayAccounts.length) c.instapay = mergeList(c.instapay, state.instapayAccounts);
+    c.savedAtMs = Date.now();
+    localStorage.setItem(META_CACHE_KEY, JSON.stringify(c));
+  } catch (e) { /* كاش محلي اختياري — أي مشكلة بتتجاهل بصمت */ }
+}
+/* ✦ نفس الاسم ⇒ نفس الـ ID: لو مكينة/محفظة اسمها اتحذف واترجع بنفس الاسم،
+   بنرجّع الـ ID الأصلي بتاعها من الكاش — فالأرصدة القديمة بترجع تظهر تحته فورًا
+   ومفيش أي ربط محتاج أصلًا. ده "منع drift" من المنبع. */
+function findCachedMachineIdNotActive(name, activeList) {
+  const n = String(name || "").trim();
+  if (!n) return null;
+  const active = new Set((activeList || []).map(m => m && m.id).filter(Boolean));
+  const hit = (loadMetaCache().machines || []).find(m => m && m.id && m.name === n && !active.has(m.id));
+  return hit ? hit.id : null;
+}
+function findCachedWalletIdNotActive(name, activeNames) {
+  const n = String(name || "").trim();
+  if (!n) return null;
+  const active = new Set(Object.keys(activeNames || {}));
+  const w = loadMetaCache().wallets || {};
+  const hit = Object.keys(w).find(id => w[id] === n && !active.has(id));
+  return hit || null;
+}
+/* ✦ تثبيت الـ IDs عند الحفظ: أي عنصر في القايمة من غير ID واسمه موجود قبل كده
+   (في القايمة الحالية أو في الكاش) بياخد نفس الـ ID القديم — عمره ما بياخد ID جديد */
+function stabilizeMachineIds(list) {
+  if (!Array.isArray(list)) return list;
+  const cache = loadMetaCache();
+  const byName = new Map();
+  (Array.isArray(state.machines) ? state.machines : []).forEach(m => { if (m && m.id && m.name && !byName.has(m.name)) byName.set(m.name, m.id); });
+  (cache.machines || []).forEach(m => { if (m && m.id && m.name && !byName.has(m.name)) byName.set(m.name, m.id); });
+  return list.map(m => {
+    if (m && m.id) return m;
+    const name = (m && m.name ? String(m.name) : "").trim();
+    const knownId = name ? byName.get(name) : null;
+    return { id: knownId || genId(), name: (m && m.name) || "" };
+  });
+}
+
+/* ✦ تطبيق الربط على مستند يوم في الذاكرة (للعرض والحساب فقط — مش كتابة):
+   - opening/closing: machines / machineDebts / machineDebtSubs / wallets / instapayAccounts
+   - المعاملات: machineId / walletId / instapayAccountId
+   - قاعدة الأمان: لو القيمة القديمة صفر → مفيش حاجة تتربط. لو القديمة والجديدة
+     الاتنين ليهم رصيد فعلي → تعارض: بنسيب الاتنين زي ما هم (وبنمنع ربط معاملات النوع ده). */
+function applyIdMappingsToDoc(doc) {
+  if (!doc || typeof doc !== "object") return { doc: doc, applied: [], skipped: [] };
+  const out = JSON.parse(JSON.stringify(doc));
+  const applied = [], skipped = [];
+  const FIELD_KIND = { machines: "machine", machineDebts: "machine", machineDebtSubs: "machine", wallets: "wallet", instapayAccounts: "instapay" };
+  const collidedIds = new Set(); // ✦ الـ IDs اللي حصل تعارض أرصدة فعللي في المستند ده بالذات — بنمنع ربط معاملاتها هي بس (مش النوع كله)
+  const totalOf = (v, kind) => (kind === "machine" ? machineBalanceTotal(v) : num(v));
+  ["opening", "closing"].forEach(sec => {
+    const so = out[sec];
+    if (!so || typeof so !== "object") return;
+    Object.keys(FIELD_KIND).forEach(field => {
+      const kind = FIELD_KIND[field];
+      const map = so[field];
+      if (!map || typeof map !== "object") return;
+      Object.keys(map).forEach(oldId => {
+        const mp = (state.idMappings || {})[oldId];
+        if (!mp || !mp.newId || mp.newId === oldId || mp.kind !== kind) return;
+        const oldV = map[oldId];
+        if (Math.abs(totalOf(oldV, kind)) <= 0.005) return; // صفر → مفيش رصيد يتربط
+        const newV = map[mp.newId];
+        if (newV !== undefined && Math.abs(totalOf(newV, kind)) > 0.005) {
+          collidedIds.add(oldId); // الاتنين ليهم أرصدة فعلية → تعارض، ممنوع نلمس
+          skipped.push(sec + "." + field + "." + oldId);
+          return;
+        }
+        map[mp.newId] = oldV;
+        delete map[oldId];
+        applied.push(sec + "." + field + "." + oldId + " → " + mp.newId);
+      });
+    });
+  });
+  if (Array.isArray(out.transactions)) {
+    out.transactions = out.transactions.map(t => {
+      if (!t || typeof t !== "object") return t;
+      const nt = { ...t };
+      if (nt.machineId && !collidedIds.has(nt.machineId)) { const mp = (state.idMappings || {})[nt.machineId]; if (mp && mp.kind === "machine" && mp.newId) nt.machineId = mp.newId; }
+      if (nt.walletId && !collidedIds.has(nt.walletId)) { const mp = (state.idMappings || {})[nt.walletId]; if (mp && mp.kind === "wallet" && mp.newId) nt.walletId = mp.newId; }
+      if (nt.instapayAccountId && !collidedIds.has(nt.instapayAccountId)) { const mp = (state.idMappings || {})[nt.instapayAccountId]; if (mp && mp.kind === "instapay" && mp.newId) nt.instapayAccountId = mp.newId; }
+      return nt;
+    });
+  }
+  return { doc: out, applied: applied, skipped: skipped };
+}
+/* نقطة الإدخال الموحدة لبيانات يوم الشغل الحالي: بتخزن النسخة الخام وبتطبق الربط للعرض */
+function ingestDayData(rawDoc) {
+  const d = rawDoc || emptyDay();
+  if (state.editingArchiveDay) return d; // تعديل الأرشيف بيتم على البيانات الأصلية بالظبط
+  state.rawDayData = d;
+  return applyIdMappingsToDoc(d).doc;
+}
+/* يوم الأرشيف: الربط للعرض فقط — النسخة الخام محفوظة جنبها للتعديل الآمن */
+function ingestArchiveDayData(rawDoc) {
+  return applyIdMappingsToDoc(rawDoc || emptyDay()).doc;
+}
+
+/* ✦ الاكتشاف التلقائي: بيتفحص مع كل تحميل لبيانات يوم الشغل. لو لقى ID قديم
+   عنده دليل اسم من الكاش + مرشح نشط وحيد بنفس الاسم + مفيش تعارض أرصدة →
+   بيكتب الربط في meta/idMappings جوه transaction (دمج مع أي ربط موجود من
+   أجهزة تانية) وبصمت. أي فشل بيتم تجاهله بصمت وبيت_retry مع التحميل الجاي. */
+let __idRemapDiscoveryBusy = false;
+async function discoverIdMappings(rawDoc) {
+  if (__idRemapDiscoveryBusy) return;
+  if (!db || !state.machinesReady || !state.walletNamesReady) return;
+  if (state.editingArchiveDay) return;
+  const doc = rawDoc || state.rawDayData || state.dayData;
+  if (!doc || !doc.opening) return;
+  try {
+    const km = knownMachineIdSet(), kw = knownWalletIdSet(), ki = knownInstapayIdSet();
+    const cache = loadMetaCache();
+    const candidates = {};
+    const consider = (id, kind) => {
+      if (!id || candidates[id]) return;
+      if ((state.idMappings || {})[id]) return; // مربوط بالفعل
+      const isKnown = kind === "machine" ? km.has(id) : kind === "wallet" ? kw.has(id) : ki.has(id);
+      if (isKnown) return; // ID حالي مش قديم
+      const cachedName = kind === "machine"
+        ? ((cache.machines || []).find(m => m && m.id === id) || {}).name
+        : kind === "wallet" ? (cache.wallets || {})[id]
+        : ((cache.instapay || []).find(a => a && a.id === id) || {}).name;
+      if (!cachedName) return; // مفيش دليل اسم — مش بنخمن أبدًا
+      let targets;
+      if (kind === "machine") targets = (state.machines || []).filter(m => m.name === cachedName).map(m => m.id);
+      else if (kind === "wallet") targets = Object.keys(state.walletNames || {}).filter(w => state.walletNames[w] === cachedName);
+      else targets = (state.instapayAccounts || []).filter(a => a.name === cachedName).map(a => a.id);
+      if (targets.length !== 1) return; // صفر أو أكتر من مرشح → غامض → يفضل "محتاج مراجعة"
+      const newId = targets[0];
+      if (!newId || newId === id) return;
+      // تعارض أرصدة في مستند اليوم نفسه: المكينة الحالية عندها رصيد فعلي بالفعل → مش ربط
+      const field = kind === "machine" ? "machines" : kind === "wallet" ? "wallets" : "instapayAccounts";
+      for (const sec of ["opening", "closing"]) {
+        const m = (doc[sec] || {})[field];
+        if (m && m[newId] !== undefined && Math.abs(kind === "machine" ? machineBalanceTotal(m[newId]) : num(m[newId])) > 0.005) return;
+      }
+      candidates[id] = { newId: newId, kind: kind, name: cachedName, evidence: "الاسم \"" + cachedName + "\" مثبّت في آخر قايمة معروفة على الجهاز ده قبل تغيّر المعرّفات" };
+    };
+    Object.keys((doc.opening || {}).machines || {}).forEach(id => consider(id, "machine"));
+    Object.keys((doc.closing || {}).machines || {}).forEach(id => consider(id, "machine"));
+    Object.keys((doc.opening || {}).wallets || {}).forEach(id => consider(id, "wallet"));
+    Object.keys((doc.closing || {}).wallets || {}).forEach(id => consider(id, "wallet"));
+    Object.keys((doc.opening || {}).instapayAccounts || {}).forEach(id => consider(id, "instapay"));
+    Object.keys((doc.closing || {}).instapayAccounts || {}).forEach(id => consider(id, "instapay"));
+    const ids = Object.keys(candidates);
+    if (ids.length === 0) return;
+    __idRemapDiscoveryBusy = true;
+    let merged = null;
+    try {
+      merged = await db.runTransaction(async tx => {
+        const ref = db.collection("meta").doc("idMappings");
+        const s = await tx.get(ref);
+        const cur = (s.exists && s.data() && s.data().mappings) ? s.data().mappings : {};
+        const out = { ...cur };
+        ids.forEach(oid => { if (!out[oid]) out[oid] = Object.assign({}, candidates[oid], { source: "auto", mappedAtMs: Date.now(), mappedBy: currentUserName() }); });
+        tx.set(ref, { mappings: out, updatedAtMs: Date.now(), updatedBy: currentUserName() });
+        return out;
+      });
+    } finally { __idRemapDiscoveryBusy = false; }
+    if (!merged) return;
+    state.idMappings = merged;
+    if (!state.editingArchiveDay) {
+      state.dayData = applyIdMappingsToDoc(state.rawDayData || doc).doc;
+      state.remapNotice = { ids: ids.slice(), at: Date.now(), dismissed: false };
+    }
+    render();
+  } catch (err) {
+    console.warn("id remap discovery failed (هتحاول تاني مع التحميل الجاي)", err);
+  }
+}
+function dismissRemapNotice() { if (state.remapNotice) state.remapNotice.dismissed = true; render(); }
+/* إلغاء ربط (أدمن): بيشيل الربط من meta/idMappings — الأرصدة بترجع تظهر تحت الـ ID الأصلي فورًا */
+async function removeIdMapping(oldId) {
+  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يلغي ربط معرّفات."); return; }
+  if (!confirm("إلغاء ربط المعرّف " + oldId + "؟\n\nالأرصدة هترجع تظهر تحت المعرّف القديم زي ما كانت (مفيش أي بيانات بتتغير — الربط للعرض فقط).")) return;
+  try {
+    const merged = await db.runTransaction(async tx => {
+      const ref = db.collection("meta").doc("idMappings");
+      const s = await tx.get(ref);
+      const cur = (s.exists && s.data() && s.data().mappings) ? { ...s.data().mappings } : {};
+      delete cur[oldId];
+      tx.set(ref, { mappings: cur, updatedAtMs: Date.now(), updatedBy: currentUserName() });
+      return cur;
+    });
+    state.idMappings = merged;
+    if (!state.editingArchiveDay && state.rawDayData) state.dayData = applyIdMappingsToDoc(state.rawDayData).doc;
+    render();
+  } catch (err) {
+    alert("تعذر إلغاء الربط: " + ((err && (err.message || err.code)) || err));
+  }
+}
+/* ✦ listener لمستند الربط — أي جهاز يضيف/يلغي ربط بيوصل لحظيًا لكل الأجهزة */
+function attachIdMappingsListener(retryCount) {
+  const unsub = db.collection("meta").doc("idMappings").onSnapshot(snap => {
+    if (snap.metadata && snap.metadata.fromCache) return;
+    state.idMappings = (snap.exists && snap.data() && snap.data().mappings) ? snap.data().mappings : {};
+    if (!state.editingArchiveDay && state.rawDayData) {
+      state.dayData = applyIdMappingsToDoc(state.rawDayData).doc;
+    }
+    render();
+  }, err => {
+    console.warn("idMappings listener error", err);
+    scheduleRetry(retryCount, () => attachIdMappingsListener(retryCount + 1));
+  });
+  state.unsubscribers.push(unsub);
+}
+
+/* ===============================================================
+   ✦ FIX (حماية البيانات من الكتابة فوقها — الطبقة الأساسية):
+   كل عمليات الحفظ على مستندات الأيام بتعدّي من هنا دلوقتي، ومفيش أي استثناء:
+
+   1) الكتابة كلها جوه Firestore Transaction (قراءة + مقارنة + كتابة ذرّية).
+   2) مراجعة نسخة المستند (rev): كل حفظ بيزوّد rev على السيرفر. لو الجهاز فتح البيانات
+      على rev قديم (جهاز تاني عدّل قبله) → الكتابة بتترفض نهائيًا مع رسالة واضحة،
+      وبيتم إعادة تحميل أحدث نسخة من السيرفر. متبقينش على expectedStatus وحده.
+   3) المستند الجديد بيتبنى على أحدث نسخة من السيرفر نفسها (مش على نسخة الجهاز):
+      أي حاجة مش ظاهرة في الواجهة (أرصدة افتتاحية تحت IDs قديمة، معاملات من جهاز تاني…)
+      بتفضل زي ما هي — مفيش استبدال ولا تصفير.
+   4) أي فشل بيمنع إظهار العملية كأنها نجحت: بنرجّع الوعد مرفوض وبنعرض رسالة خطأ.
+   =============================================================== */
+function currentUserName() {
+  return (state.userProfile && state.userProfile.username) || ((state.authUser?.email || "").split("@")[0]) || "مستخدم";
+}
+function dayRevOf(doc) { return (doc && typeof doc.rev === "number" && doc.rev > 0) ? doc.rev : 0; }
+
+/* دمج ثلاثي آمن: قيم السيرفر بتغلب النسخة المحلية (عشان مفيش قيمة قديمة ترجع)،
+   واللي اتبعت من الواجهة بيغلب الكل. أي ID موجود عند السيرفر ومش في الواجهة بيفضل محفوظ. */
+function threeWayMergeMaps(localMap, serverMap, submittedMap) {
+  const out = {};
+  Object.keys(localMap || {}).forEach(k => { out[k] = localMap[k]; });
+  Object.keys(serverMap || {}).forEach(k => { out[k] = serverMap[k]; });
+  Object.keys(submittedMap || {}).forEach(k => { out[k] = submittedMap[k]; });
+  return out;
+}
+
+/* معالجة موحدة لأخطاء الحفظ — بتعرض رسالة واضحة، وبتحدّث الواجهة من السيرفر عند التعارض */
+function handleDaySaveError(key, err) {
+  if (err && err.code === "day-status-changed") {
+    reportSaveError("حالة اليوم اتغيرت من جهاز تاني قبل ما تحفظ التعديل ده. حدّث الصفحة وشوف آخر حالة قبل ما تكمل.");
+    refreshCurrentDayFromServer(key);
+  } else if (err && err.code === "day-rev-conflict") {
+    reportSaveError("البيانات اتغيّرت من جهاز تاني بعد ما فتحت الشاشة دي. تم إلغاء الحفظ عشان ميتكتبش فوق بيانات أحدث — جاري تحميل أحدث نسخة، راجعها وكرر التعديل.");
+    refreshCurrentDayFromServer(key);
+  } else if (err && err.code === "tx-target-changed") {
+    reportSaveError("المعاملة دي اتعدّلت أو اتحذفت من جهاز تاني. اتحدثت البيانات — راجع وكرر المحاولة.");
+    refreshCurrentDayFromServer(key);
+  } else if (err && err.code === "tx-invalid") {
+    reportSaveError(err.message || "المعاملة دي مينفعش تتنفذ بالبيانات الحالية.");
+  } else if (err && err.code === "day-missing") {
+    reportSaveError("مستند اليوم ده مش موجود على السيرفر (اتنقل أو اتحذف من جهاز تاني). اعمل تحديث للصفحة وراجع الأرشيف.");
+    refreshCurrentDayFromServer(key);
+  } else if (err && err.code === "move-old-missing") {
+    reportSaveError("اليوم الأصلي مش موجود على السيرفر (اتنقل أو اتحذف من جهاز تاني) — اتلغت العملية عشان ميتضيعش بيانات.");
+    refreshCurrentDayFromServer(key);
+  } else if (err && err.code === "move-target-not-empty") {
+    reportSaveError("التاريخ الجديد فيه بيانات مسجّلة بالفعل — اختار تاريخ تاني.");
+  } else if (err && err.code === "move-status-mismatch") {
+    reportSaveError("حالة اليوم الهدف اتغيّرت من جهاز تاني قبل النقل — اتلغت العملية، حدّث الصفحة وجرب تاني.");
+  } else if (err && (err.code === "offline" || err.message === "offline" || (err && err.code === "no-db"))) {
+    // الرسالة اتعملت في مكان الكشف عن انقطاع النت
+  } else {
+    reportSaveError("فشل حفظ بيانات اليوم! البيانات دي متسجلتش على السيرفر: " + ((err && (err.message || err.code)) || err));
+  }
+}
+
+/* ✦ قراءة آمنة لقيمة رصيد قديم من خانة في الشاشة:
+   - الخانة مش موجودة (مش ظاهرة في الواجهة) → نرجّع القيمة الأصلية زي ما هي
+   - الخانة فاضية (المستخدم ملمسهاش) → نرجّع القيمة الأصلية زي ما هي
+   - قيمة مش رقمية → نرجّع القيمة الأصلية زي ما هي
+   الهدف: مستحيل رصيد قديم يتثبّت صفر بالغلط — التعديل لازم يكون رقم واضح ومقصود. */
+function readOldBalanceInput(inputId, fallbackVal) {
+  const el = document.getElementById(inputId);
+  if (!el) return fallbackVal;
+  const raw = (el.value === undefined || el.value === null) ? "" : String(el.value).trim();
+  if (raw === "") return fallbackVal;
+  const n = parseFloat(raw);
+  return isNaN(n) ? fallbackVal : n;
+}
+
+/* إعادة تحميل مستند اليوم من السيرفر (بعد أي تعارض) عشان الواجهة تعرض أحدث نسخة فورًا */
+function refreshCurrentDayFromServer(key) {
   if (!db) return;
-  db.collection("days").doc(key).set(data)
-    .catch(err => reportSaveError("فشل حفظ بيانات اليوم! البيانات دي متسجلتش على السيرفر: " + (err.message || err.code)));
+  const k = key || state.today;
+  db.collection("days").doc(k).get().then(snap => {
+    if (k === state.today) {
+      state.dayData = ingestDayData(snap.exists ? snap.data() : emptyDay()); // ✦ E32: طبقة الربط التصحيحي
+      state.dayReady = true;
+      render();
+      discoverIdMappings(state.rawDayData); // ✦ E32: اكتشاف تلقائي صامت
+    }
+  }).catch(() => {});
+}
+
+/* ✦ الواجهة الأساسية للحفظ: الكتابة على مستند يوم كامل
+   - expectedStatus: الحالة المتوقعة (زي الأول — شرط إضافي مش بديل)
+   - baseRev: رقم نسخة المستند اللي بنينا عليها التعديل؛ لو السيرفر غيره → رفض
+   - buildPayload(cur, tx): بيستلم نسخة السيرفر الحديثة ويبني المستند الجديد منها،
+     فيقدر يعمل نسخة احتياطية ذرّية (tx.set على days_backup) قبل أي استبدال */
+function persistDayDoc(key, opts, buildPayload) {
+  opts = opts || {};
+  if (!db) return Promise.reject(Object.assign(new Error("no-db"), { code: "no-db" }));
+  if (!__isOnline) {
+    const msg = "مفيش اتصال بالإنترنت. التعديل ده متسجلش.";
+    reportSaveError(msg);
+    return Promise.reject(Object.assign(new Error("offline"), { code: "offline" }));
+  }
+  const expectedStatus = opts.expectedStatus;
+  const baseRev = opts.baseRev;
+  const ref = db.collection("days").doc(key);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const cur = snap.exists ? snap.data() : null;
+    if (expectedStatus !== undefined) {
+      const curStatus = cur ? (cur.status || "not_started") : "not_started";
+      if (curStatus !== expectedStatus) {
+        const err = new Error("day-status-changed");
+        err.code = "day-status-changed";
+        err.actualStatus = curStatus;
+        throw err;
+      }
+    }
+    if (baseRev !== undefined) {
+      const serverRev = dayRevOf(cur);
+      if (serverRev !== baseRev) {
+        const err = new Error("day-rev-conflict");
+        err.code = "day-rev-conflict";
+        err.serverRev = serverRev;
+        err.baseRev = baseRev;
+        throw err;
+      }
+    }
+    const payload = buildPayload ? (await buildPayload(cur, tx)) : (cur ? { ...cur } : { ...emptyDay() });
+    const nextRev = dayRevOf(cur) + 1;
+    const finalDoc = { ...payload, rev: nextRev, updatedAtMs: serverNowMs(), updatedBy: currentUserName() };
+    tx.set(ref, finalDoc);
+    return finalDoc;
+  }).catch(err => {
+    handleDaySaveError(key, err);
+    throw err;
+  });
+}
+
+/* ✦ عمليات المعاملات (إضافة/تعديل/حذف) — بتتطبق على أحدث نسخة من السيرفر نفسها (rebase)
+   بدل الكتابة فوق نسخة الجهاز، فمفيش معاملة سجّلها جهاز تاني تضيع أبدًا مهما كان التوقيت. */
+function mutateDayTransactions(dayKey, expectedStatus, mutator) {
+  if (!db) return Promise.reject(Object.assign(new Error("no-db"), { code: "no-db" }));
+  if (!__isOnline) {
+    const msg = "مفيش اتصال بالإنترنت. التعديل ده متسجلش.";
+    reportSaveError(msg);
+    return Promise.reject(Object.assign(new Error("offline"), { code: "offline" }));
+  }
+  const ref = db.collection("days").doc(dayKey);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const cur = snap.exists ? snap.data() : null;
+    const curStatus = cur ? (cur.status || "not_started") : "not_started";
+    if (expectedStatus !== undefined && curStatus !== expectedStatus) {
+      const err = new Error("day-status-changed");
+      err.code = "day-status-changed";
+      err.actualStatus = curStatus;
+      throw err;
+    }
+    if (!cur) {
+      throw Object.assign(new Error("day-missing"), { code: "day-missing" });
+    }
+    const serverTxs = Array.isArray(cur.transactions) ? cur.transactions.slice() : [];
+    const newTxs = mutator(serverTxs, cur); // ممكن ترمي خطأ (تعارض/تحقق) — بيوقف الكتابة كلها
+    const nextRev = dayRevOf(cur) + 1;
+    const finalDoc = { ...cur, transactions: newTxs, rev: nextRev, updatedAtMs: serverNowMs(), updatedBy: currentUserName() };
+    tx.set(ref, finalDoc);
+    return finalDoc;
+  }).catch(err => {
+    handleDaySaveError(dayKey, err);
+    throw err;
+  });
+}
+
+/* ✦ NEW: نقل يوم كامل لتاريخ تاني في معاملة واحدة ذرّية (كله أو مفيش):
+   قراءة الطرفين + فحص النسخ/الحالة + نسخة احتياطية للطرفين في days_backup + كتابة الجديد + حذف القديم */
+function moveDayDocument(oldKey, newKey, opts) {
+  opts = opts || {};
+  if (!db) return Promise.reject(Object.assign(new Error("no-db"), { code: "no-db" }));
+  return db.runTransaction(async (tx) => {
+    const oldRef = db.collection("days").doc(oldKey);
+    const newRef = db.collection("days").doc(newKey);
+    const oldSnap = await tx.get(oldRef);
+    const newSnap = await tx.get(newRef);
+    const oldData = oldSnap.exists ? oldSnap.data() : null;
+    const newData = newSnap.exists ? newSnap.data() : null;
+    if (!oldData) throw Object.assign(new Error("move-old-missing"), { code: "move-old-missing" });
+    if (opts.oldRev !== undefined && dayRevOf(oldData) !== opts.oldRev) {
+      throw Object.assign(new Error("day-rev-conflict"), { code: "day-rev-conflict" });
+    }
+    if (newData) {
+      const newStatus = newData.status || "not_started";
+      if (opts.expectedNewStatus !== undefined) {
+        if (newStatus !== opts.expectedNewStatus) throw Object.assign(new Error("move-status-mismatch"), { code: "move-status-mismatch" });
+      } else if (newStatus !== "not_started") {
+        throw Object.assign(new Error("move-target-not-empty"), { code: "move-target-not-empty" });
+      }
+    }
+    const payload = opts.transform ? opts.transform(oldData, newData) : { ...oldData };
+    const stamp = Date.now();
+    // ✦ نسخة احتياطية للطرفين قبل أي حذف أو استبدال — قابلة للتراجع منها بأداة الاسترجاع
+    tx.set(db.collection("days_backup").doc(oldKey + "__move_" + stamp),
+      { ...oldData, backupReason: "نقل يوم من " + oldKey + " إلى " + newKey, backedUpAtMs: serverNowMs(), backupKey: oldKey });
+    if (newData && Array.isArray(newData.transactions) && newData.transactions.length > 0) {
+      tx.set(db.collection("days_backup").doc(newKey + "__replaced_" + stamp),
+        { ...newData, backupReason: "استبدال يوم قائم عند النقل من " + oldKey, backedUpAtMs: serverNowMs(), backupKey: newKey });
+    }
+    const nextRev = dayRevOf(newData) + 1;
+    const finalDoc = { ...payload, rev: nextRev, updatedAtMs: serverNowMs(), updatedBy: currentUserName() };
+    tx.set(newRef, finalDoc);
+    tx.delete(oldRef);
+    return finalDoc;
+  }).catch(err => {
+    handleDaySaveError(oldKey, err);
+    throw err;
+  });
+}
+
+/* ✦ FIX: persistDay القديمة اتحولت لغلاف آمن فوق الطبقة الجديدة — أي حقل مش موجود في
+   data (أرصدة افتتاحية تحت IDs مش ظاهرة في الواجهة مثلًا) بيفضل محفوظ من نسخة السيرفر */
+function persistDay(key, data, expectedStatus) {
+  return persistDayDoc(key, { expectedStatus }, (cur) => {
+    const payload = { ...(cur || emptyDay()), ...data };
+    if (cur && cur.opening && data && data.opening) {
+      const so = cur.opening;
+      const lo = (state.dayData && key === state.today && state.dayData.opening) || {};
+      const no = data.opening;
+      payload.opening = {
+        ...payload.opening,
+        machines: threeWayMergeMaps(lo.machines, so.machines, no.machines),
+        wallets: threeWayMergeMaps(lo.wallets, so.wallets, no.wallets),
+        instapayAccounts: threeWayMergeMaps(lo.instapayAccounts, so.instapayAccounts, no.instapayAccounts),
+        machineDebts: threeWayMergeMaps(lo.machineDebts, so.machineDebts, no.machineDebts),
+        machineDebtSubs: threeWayMergeMaps(lo.machineDebtSubs, so.machineDebtSubs, no.machineDebtSubs),
+      };
+    }
+    if (cur && cur.closing && data && data.closing) {
+      const sc = cur.closing, nc = data.closing;
+      payload.closing = {
+        ...payload.closing,
+        machines: threeWayMergeMaps(null, sc.machines, nc.machines),
+        wallets: threeWayMergeMaps(null, sc.wallets, nc.wallets),
+        instapayAccounts: threeWayMergeMaps(null, sc.instapayAccounts, nc.instapayAccounts),
+        machineDebts: threeWayMergeMaps(null, sc.machineDebts, nc.machineDebts),
+      };
+    }
+    return payload;
+  });
 }
 /* ✦ NEW: يوم الشغل الحالي — عشان لو الساعة عدت ١٢ بليل، اليوم يفضل مفتوح لحد ما تقفله بنفسك */
 function saveCurrentDayKey(key) {
@@ -602,6 +1185,82 @@ function fetchArchiveDay(key) {
   if (!db) return Promise.resolve(null);
   return db.collection("days").doc(key).get()
     .then(snap => snap.exists ? snap.data() : null);
+}
+
+/* ===============================================================
+   ✦ NEW: نظام قفل اليوم (Day Lock) — يمنع تعارض فتح/قفل/تعديل نفس يوم الشغل
+   من أكتر من جهاز في نفس اللحظة. كل عملية حساسة (بدء يوم، إغلاق يوم، إعادة فتح،
+   تغيير تاريخ) لازم تمر عبر runWithDayLock قبل ما تنفذ أي كتابة.
+   =============================================================== */
+const DAY_LOCK_MAX_AGE_MS = 20000; // لو قفل قديم عدّى 20 ثانية، نعتبره متروك (جهاز اتقفل فجأة مثلاً) ونسمح بتجاوزه
+
+function dayLockRef() { return db.collection("meta").doc("dayLock"); }
+
+/* بياخد القفل لعملية معينة على يوم معين، وبيرجّع true لو نجح ياخده، أو false ومعاه اسم مين ماسكه لو مشغول */
+async function acquireDayLock(dayKey, actionLabel) {
+  const ref = dayLockRef();
+  const holderName = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "مستخدم";
+  try {
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const cur = snap.exists ? snap.data() : null;
+      const now = Date.now();
+      const isStale = cur && cur.lockedAtMs && (now - cur.lockedAtMs) > DAY_LOCK_MAX_AGE_MS;
+      if (cur && cur.sessionId && cur.sessionId !== DEVICE_SESSION_ID && !isStale) {
+        // مقفول فعليًا من جهاز/جلسة تانية ولسه حديث — امنع
+        return { ok: false, holderName: cur.holderName || "مستخدم تاني", action: cur.action || "" };
+      }
+      tx.set(ref, {
+        sessionId: DEVICE_SESSION_ID,
+        holderName,
+        action: actionLabel,
+        dayKey,
+        lockedAtMs: now,
+      });
+      return { ok: true };
+    });
+    return result;
+  } catch (err) {
+    console.error("acquireDayLock failed", err);
+    // لو حصل خطأ في القفل نفسه (مشكلة شبكة لحظية) امنع العملية بدل ما نخاطر بتعارض
+    return { ok: false, holderName: null, action: null, error: err };
+  }
+}
+
+/* بيسيب القفل — لازم يتنادى دايمًا بعد ما العملية تخلص (نجاح أو فشل) */
+async function releaseDayLock() {
+  try {
+    const ref = dayLockRef();
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const cur = snap.exists ? snap.data() : null;
+      if (cur && cur.sessionId === DEVICE_SESSION_ID) {
+        tx.delete(ref);
+      }
+    });
+  } catch (err) {
+    console.warn("releaseDayLock failed", err);
+  }
+}
+
+/* ✦ غلاف موحّد: بياخد القفل، ينفذ fn، وبعدين يسيب القفل — سواء نجح fn أو فشل.
+   لو القفل مشغول من حد تاني، بيوري رسالة واضحة ومبينفذش fn خالص. */
+async function runWithDayLock(dayKey, actionLabel, fn) {
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  const acquired = await acquireDayLock(dayKey, actionLabel);
+  if (!acquired.ok) {
+    if (acquired.error) {
+      alert("تعذر التأكد من عدم وجود تعارض. جرب تاني.");
+    } else {
+      alert(`في حد تاني (${acquired.holderName}) بيعمل "${acquired.action || "عملية"}" على نفس اليوم دلوقتي. استنى شوية وجرب تاني.`);
+    }
+    return;
+  }
+  try {
+    await fn();
+  } finally {
+    await releaseDayLock();
+  }
 }
 
 /* ✦ NEW: يجيب الأيام "الفاضية" المتاحة لاختيارها كتاريخ لليوم — أي يوم من آخر 30 يوم لحد النهاردة
@@ -637,14 +1296,69 @@ function displayDate(key){
   const dt = new Date(y, m-1, d);
   return `${AR_DAYS[dt.getDay()]} ${d} ${AR_MONTHS[m-1]} ${y}`;
 }
-function timeNow(){
-  const d = new Date();
-  let h = d.getHours(); const m = pad(d.getMinutes());
+/* ===============================================================
+   ✦ NEW: توقيت موحّد (بتوقيت القاهرة) مبني على ساعة سيرفر Firebase
+   بدل ساعة جهاز المستخدم — عشان كل المعاملات من أي موبايل تتسجل
+   بنفس التوقيت الحقيقي حتى لو ساعة الجهاز غلط.
+   =============================================================== */
+let __serverTimeOffsetMs = 0; // الفرق بين وقت السيرفر ووقت الجهاز (بالميلي ثانية)
+let __serverTimeSynced = false;
+
+/* بيقيس الفرق بين ساعة السيرفر وساعة الجهاز عن طريق كتابة serverTimestamp في مستند صغير مخصص لده وقراءته فورًا */
+function syncServerTime() {
+  if (!db) return Promise.resolve();
+  const ref = db.collection("meta").doc("serverClock");
+  const beforeMs = Date.now();
+  return ref.set({ t: firebase.firestore.FieldValue.serverTimestamp() })
+    .then(() => ref.get({ source: "server" }))
+    .then(snap => {
+      const afterMs = Date.now();
+      const serverMs = snap.exists && snap.data().t ? snap.data().t.toMillis() : null;
+      if (serverMs) {
+        // نعوّض زمن الرحلة (round-trip) بمتوسط وقت الإرسال والاستلام
+        const roundTripMid = beforeMs + (afterMs - beforeMs) / 2;
+        __serverTimeOffsetMs = serverMs - roundTripMid;
+        __serverTimeSynced = true;
+      }
+    })
+    .catch(err => { console.warn("syncServerTime failed", err); });
+}
+
+/* الوقت الحالي الحقيقي (متزامن مع السيرفر) كـ epoch ms — ده اللي بيتسجل في كل معاملة */
+function serverNowMs() {
+  return Date.now() + __serverTimeOffsetMs;
+}
+
+/* نص عرض الوقت (ساعة:دقيقة ص/م) — دايمًا بتوقيت القاهرة بغض النظر عن توقيت الجهاز أو منطقته */
+function formatTimeCairo(ms) {
+  if (!ms) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit", hour12: false
+  }).formatToParts(new Date(ms));
+  const get = t => parts.find(p => p.type === t)?.value || "0";
+  let h = parseInt(get("hour"), 10);
+  const m = get("minute");
   const ampm = h >= 12 ? "م" : "ص";
   h = h % 12; if (h === 0) h = 12;
   return `${h}:${m} ${ampm}`;
 }
+/* وقت اليوم الحالي (نص) بتوقيت القاهرة، متزامن مع السيرفر */
+function timeNow(){
+  return formatTimeCairo(serverNowMs());
+}
+/* ✦ مفتاح اليوم (تاريخ) بتوقيت القاهرة، متزامن مع السيرفر — عشان اليوم مايتغيّرش بسبب توقيت الجهاز */
+function dateKeyNowCairo() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date(serverNowMs()));
+  const get = t => parts.find(p => p.type === t)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
 function genId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+/* ✦ NEW: معرّف فريد لكل جهاز/تبويب مفتوح — بيتولد مرة واحدة وقت فتح التطبيق ويفضل ثابت طول الجلسة،
+   بيستخدم في نظام قفل اليوم عشان نعرف مين اللي ماسك القفل بالظبط */
+const DEVICE_SESSION_ID = genId() + genId();
 function num(v){ const n = parseFloat(v); return isNaN(n) ? 0 : n; }
 function money(n){
   const v = Number(n)||0;
@@ -661,8 +1375,23 @@ const FAWRY_SUBS = ["مدفوعات", "خدمات موبايل", "فيزا"];
 const FAWRY_NO_NEGATIVE_EXEMPT = "مدفوعات";
 function machineSubs(m) { return (m && m.name === "فوري") ? FAWRY_SUBS : null; }
 function emptyFawryBalance() { return { "مدفوعات": 0, "خدمات موبايل": 0, "فيزا": 0 }; }
+/* ✦ FIX: لو رصيد مكينة فوري اتخزن رقم عادي بدل كائن {مدفوعات، خدمات موبايل، فيزا} (بيانات قديمة/تالفة)،
+   كنا بنرميه ونبدأ بصفر — وده اللي كان بيسبب ظهور الأرصدة صفر في الشاشة مع إنها موجودة فعليًا في الداتابيز.
+   دلوقتي: أي رقم عادي زي ده بيتحسب كـ"مدفوعات" بدل ما يتمسح. */
+function coerceFawryBalance(cur) {
+  if (cur && typeof cur === "object") return { ...cur };
+  if (typeof cur === "number" && cur !== 0) {
+    console.warn("coerceFawryBalance: رصيد مكينة فوري كان مخزن كرقم مش كائن — تم تحويله لـ'مدفوعات' بدل ما يتصفر", cur);
+    return { ...emptyFawryBalance(), "مدفوعات": cur };
+  }
+  return emptyFawryBalance();
+}
 function machineBalValue(bal, sub) {
-  if (sub) return num(bal && typeof bal === "object" ? bal[sub] : 0);
+  if (sub) {
+    if (bal && typeof bal === "object") return num(bal[sub]);
+    if (typeof bal === "number" && bal !== 0 && sub === "مدفوعات") return num(bal);
+    return 0;
+  }
   return num(bal);
 }
 
@@ -693,6 +1422,11 @@ function computeLive(dayData){
   // ابدأ من الأرصدة الافتتاحية
   (state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS).forEach(acc => {
     instapayAccounts[acc.id] = num(o.instapayAccounts?.[acc.id] ?? 0);
+  });
+  // ✦ NEW (E30): حسابات انستاباي قديمة (IDs مش في الميتا الحالية) — بتفضل في الرصيد المحسوب زي ما هي
+  // (قبل كده كانت بتتشال من instapayAccounts فتختفي من الشاشة وكأنها صفر)
+  Object.keys(o.instapayAccounts || {}).forEach(id => {
+    if (!(id in instapayAccounts)) instapayAccounts[id] = num(o.instapayAccounts[id] ?? 0);
   });
   let islamBalance = o.islamBalance || 0;
   const wallets = { ...o.wallets };
@@ -740,13 +1474,13 @@ function computeLive(dayData){
       if (sub === "فيزا") {
         drawer += (-amt + p);
         const cur = machines[t.machineId];
-        const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+        const obj = coerceFawryBalance(cur);
         obj["فيزا"] = (obj["فيزا"] || 0) + amt;
         machines[t.machineId] = obj;
       } else if (sub) {
         machineDrawer += (amt + p);
         const cur = machines[t.machineId];
-        const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+        const obj = coerceFawryBalance(cur);
         obj[sub] = (obj[sub] || 0) - amt;
         machines[t.machineId] = obj;
       } else {
@@ -760,7 +1494,10 @@ function computeLive(dayData){
     } else if (t.category === "machineDebt") {
       // ✦ NEW: إضافة مديونية على مكينة + زيادة رصيد المكينة بنفس المبلغ
       const debtMachine = state.machines.find(mm => mm.id === t.machineId);
-      const debtSubs = machineSubs(debtMachine);
+      let debtSubs = machineSubs(debtMachine);
+      // ✦ FIX: مكينة قديمة (ID مش في الميتا الحالية) لكن رصيدها مخزن ككائن فوري —
+      // عاملها كفوري بدل ما نشيل شكل الرصيد التفصيلي ونحوله لرقم واحد
+      if (!debtSubs && machines[t.machineId] && typeof machines[t.machineId] === "object") debtSubs = FAWRY_SUBS;
       if (debtSubs) {
         // فوري: مبلغ المديونية ممكن يكون مقسّم بين "مدفوعات" و"خدمات موبايل"
         const madfoatPart = num(t.debtMadfoat ?? t.amount ?? 0); // توافق مع بيانات قديمة (كانت كلها بتروح مدفوعات)
@@ -772,7 +1509,7 @@ function computeLive(dayData){
         subsDebt["خدمات موبايل"] = (subsDebt["خدمات موبايل"] || 0) + khadamatPart;
         machineDebtSubs[t.machineId] = subsDebt;
         const cur = machines[t.machineId];
-        const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+        const obj = coerceFawryBalance(cur);
         obj["مدفوعات"] = (obj["مدفوعات"] || 0) + madfoatPart;
         obj["خدمات موبايل"] = (obj["خدمات موبايل"] || 0) + khadamatPart;
         machines[t.machineId] = obj;
@@ -802,7 +1539,7 @@ function computeLive(dayData){
       const topUpKhadamat = num(t.fawryTopUpKhadamat);       // ✦ NEW: مبلغ إضافي يتزود على خدمات موبايل
       drawer += (-paidFromMadfoat - paidFromKhadamat + paidFromVisa - topUpMadfoat - topUpKhadamat);
       const cur = machines[t.machineId];
-      const obj = (cur && typeof cur === "object") ? { ...cur } : emptyFawryBalance();
+      const obj = coerceFawryBalance(cur);
       const madfoatBefore = obj["مدفوعات"] || 0;
       const khadamatBefore = obj["خدمات موبايل"] || 0;
       // ✦ المسدد بيحرّك الرصيد ناحية الصفر (لو الرصيد سالب بيتزود، لو موجب بيتقل)، والزيادة الإضافية بتتضاف عادي
@@ -873,6 +1610,10 @@ const state = {
   loginError: null,
   loginSubmitting: false,
   saveError: null,
+  idMappings: {},        // ✦ NEW (E31): الربط التصحيحي oldId -> {newId, kind, evidence, source, mappedAtMs, mappedBy}
+  rawDayData: null,      // ✦ NEW (E31): آخر نسخة خام (غير مربوطة) من بيانات اليوم — عشان نعيد تطبيق الربط لو اتحدّث
+  remapNotice: null,     // ✦ NEW (E31): {ids, at, dismissed} — إشعار خفيف بأنه اتربط IDs تلقائيًا
+  archiveDayRaw: null,   // ✦ NEW (E31): النسخة الخام ليوم الأرشيف المعروض (الربط بيتم للعرض فقط)
   balancesHidden: false,
   collapsedSections: { main: false, wallets: false, machines: false },
   walletLimits: { w1: 0, w2: 0, w3: 0, w4: 0 },
@@ -893,7 +1634,10 @@ const state = {
   eoDatesLoading: false,
   archiveDateEdit: null, // ✦ NEW: { availableDates, loading, selected } — حالة شيت تعديل تاريخ يوم أرشيف
   balanceBreakdownMachineId: null, // ✦ NEW: لعرض تفاصيل حساب رصيد فوري (تشخيص)
+  startSheetPrefill: null, // ✦ NEW: { loading | none | error | { fromKey, values } } — اقتراحات بدء اليوم من آخر يوم مقفول
   theme: "light", // ✦ NEW: "light" أو "dark"
+  offlineRetrying: false, // ✦ NEW: حالة زرار "إعادة المحاولة" في شاشة عدم الاتصال
+  activeDayLock: null, // ✦ NEW: { holderName, action } لو حد تاني ماسك قفل اليوم دلوقتي
 };
 
 try {
@@ -951,42 +1695,80 @@ function attachRealtimeListeners() {
   attachWalletLimitsListener(0);
   attachInstapayAccountsListener(0);   // ✦ NEW
   attachWalletCommissionsListener(0);  // ✦ NEW
+  attachIdMappingsListener(0);         // ✦ NEW (E31): الربط التصحيحي — بيتحدث لحظيًا من كل الأجهزة
+  attachDayLockListener();             // ✦ NEW
   resolveWorkingDayAndAttach(0);
 }
 
-/* ✦ NEW: يحدد يوم الشغل الصح (ممكن يكون يوم سابق اتنسي ومفتحش، أو الساعة عدت ١٢ بليل) قبل ما يربط الـ listener */
-function resolveWorkingDayAndAttach(retryCount) {
-  fetchCurrentDayKey().then(key => {
-    const realToday = dateKey(new Date());
-    if (key) {
-      state.today = key;
-      // ✦ NEW: لو يوم الشغل المحفوظ مش نفس تاريخ النهاردة الفعلي، وبيانات اليوم ده لسه "لم يبدأ"
-      //   (يعني اتفوّت تمامًا ومحدش فتح التطبيق فيه) — اسأل المستخدم قبل ما نفتحه له صامت
-      if (key !== realToday) {
-        db.collection("days").doc(key).get().then(snap => {
-          const d = snap.exists ? snap.data() : emptyDay();
-          if (d.status === "not_started") {
-            state.staleDayPrompt = { key, realToday };
-          }
-          state.dayData = d; // نعرض بيانات اليوم القديم لحد ما المستخدم يقرر
-          attachDayListener(0);
-          render();
-        }).catch(() => { attachDayListener(0); });
-        return;
-      }
+/* ✦ NEW: متابعة حالة قفل اليوم لحظيًا — عشان نقدر نعرض تنبيه استباقي لو حد تاني بيعدّل دلوقتي،
+   قبل ما المستخدم يضغط زرار ويتفاجئ بالرفض */
+function attachDayLockListener() {
+  const unsub = dayLockRef().onSnapshot(snap => {
+    const cur = snap.exists ? snap.data() : null;
+    if (cur && cur.sessionId && cur.sessionId !== DEVICE_SESSION_ID) {
+      const isStale = cur.lockedAtMs && (Date.now() - cur.lockedAtMs) > DAY_LOCK_MAX_AGE_MS;
+      state.activeDayLock = isStale ? null : { holderName: cur.holderName, action: cur.action };
     } else {
-      // أول مرة يفتح فيها التطبيق — سجّل يوم النهاردة كيوم الشغل الحالي
-      saveCurrentDayKey(state.today);
+      state.activeDayLock = null;
     }
-    attachDayListener(0);
-  }).catch(err => {
-    console.error("resolveWorkingDayAndAttach failed (retry " + retryCount + ")", err);
+    render();
+  }, err => { console.warn("dayLock listener error", err); });
+  state.unsubscribers.push(unsub);
+}
+
+/* ✦ UPDATED: بقت realtime listener دائم على meta/currentDay بدل قراءة لمرة واحدة.
+   السبب الجوهري للمشكلة القديمة: لو جهاز A بيشتغل على يوم معين، وجهاز B غيّر يوم الشغل
+   (بدأ يوم جديد / تخطى يوم قديم)، جهاز A مكانش بيعرف بالتغيير ده أبدًا لحد ما يعمل reload يدوي —
+   فكان فاضل يكتب على يوم "قديم" من وجهة نظره فعليًا اتغير أو اتقفل من تحته على السيرفر.
+   دلوقتي أي تغيير في currentDay من أي جهاز بيوصل لحظيًا لكل الأجهزة التانية وبيبدّلوا الـ listener بتاعهم تلقائيًا. */
+let __currentDayUnsub = null;
+
+function resolveWorkingDayAndAttach(retryCount) {
+  const unsub = db.collection("meta").doc("currentDay").onSnapshot(snap => {
+    if (state.editingArchiveDay) return; // ✦ FIX: ممنوع نبدّل يوم الشغل في نص تعديل يوم من الأرشيف
+    const key = snap.exists ? (snap.data().key || null) : null;
+    const realToday = dateKey(new Date());
+
+    if (!key) {
+      // أول مرة يفتح فيها أي جهاز التطبيق — سجّل يوم النهاردة كيوم الشغل الحالي
+      if (!state.dayReady) saveCurrentDayKey(realToday);
+      if (state.today !== realToday || !state.dayReady) {
+        state.today = realToday;
+        switchDayListener();
+      }
+      return;
+    }
+
+    if (key === state.today && state.dayReady) return; // مفيش تغيير فعلي
+
+    // ✦ يوم الشغل اتغيّر (سواء من الجهاز ده أو من جهاز تاني) — بدّل الـ listener على اليوم الجديد
+    state.today = key;
+    state.staleDayPrompt = null; // أي تنبيه قديم بقى غير ذي صلة لو اليوم اتغيّر فعلاً
+    if (key !== realToday) {
+      db.collection("days").doc(key).get().then(snap2 => {
+        const d = snap2.exists ? snap2.data() : emptyDay();
+        if (d.status === "not_started") {
+          state.staleDayPrompt = { key, realToday };
+        }
+        state.dayData = ingestDayData(d); // ✦ E32: طبقة الربط التصحيحي
+        state.dayReady = false;
+        switchDayListener();
+        discoverIdMappings(state.rawDayData); // ✦ E32
+      }).catch(() => { switchDayListener(); });
+    } else {
+      state.dayReady = false;
+      switchDayListener();
+    }
+  }, err => {
+    console.error("currentDay listener error (retry " + retryCount + ")", err);
     if (retryCount < LISTENER_RETRY_DELAYS.length) {
       scheduleRetry(retryCount, () => resolveWorkingDayAndAttach(retryCount + 1));
     } else {
       attachDayListener(0); // كملّ بيوم النهاردة كحل احتياطي بدل ما يعلّق التطبيق
     }
   });
+  __currentDayUnsub = unsub;
+  state.unsubscribers.push(unsub);
 }
 
 /* ✦ NEW: المستخدم اختار يفضل شغال على اليوم القديم اللي اتفوّت (مثلاً هيسجله بأثر رجعي) */
@@ -996,19 +1778,19 @@ function keepStaleDay() {
 }
 
 /* ✦ NEW: المستخدم اختار يتخطى اليوم القديم اللي اتفوّت ويبدأ يوم الشغل بتاريخ النهاردة الفعلي */
-function skipToFreshDay() {
+async function skipToFreshDay() {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   const prompt = state.staleDayPrompt;
   if (!prompt) return;
-  state.staleDayPrompt = null;
-  state.today = prompt.realToday;
-  saveCurrentDayKey(prompt.realToday);
-  state.dayReady = false;
-  state.dayData = emptyDay();
-  state.txFilter = { category: "all", q: "" };
-  switchDayListener();
-  state.tab = "today";
-  render();
+  await runWithDayLock(prompt.key, "تخطي يوم قديم متفوّت", async () => {
+    state.staleDayPrompt = null;
+    saveCurrentDayKey(prompt.realToday);
+    // ملحوظة: state.today و switchDayListener هيتحدثوا تلقائيًا عن طريق realtime listener بتاع currentDay
+    state.txFilter = { category: "all", q: "" };
+    state.tab = "today";
+    render();
+  }).catch(() => {});
 }
 
 function scheduleRetry(retryCount, fn) {
@@ -1019,16 +1801,45 @@ function scheduleRetry(retryCount, fn) {
 
 function attachMachinesListener(retryCount) {
   const unsub = db.collection("meta").doc("machines").onSnapshot(snap => {
+    // ✦ FIX: تجاهل أي بيانات جاية من الكاش — لازم من السيرفر عشان منعتبرش المستند "مش موجود" غلط
+    if (snap.metadata && snap.metadata.fromCache) return;
     const data = snap.exists ? snap.data() : null;
     if (data && Array.isArray(data.list) && data.list.length > 0) {
       state.machines = data.list;
-    } else if (!state.machinesReady) {
+      state.machinesReady = true;
+      saveMetaCacheSnapshot(); // ✦ E33: كاش آخر قايمة معروفة (دليل الاسم للربط التصحيحي)
+    } else if (!snap.exists && !state.machinesReady) {
+      /* ✦ FIX (جذري): ممنوع نثبّت في الواجهة قايمة مكن مخترعة بـ IDs جديدة قبل ما نعرف
+         النتيجة الفعلية على السيرفر. القفل بيتم جوه transaction: لو المستند موجود فعلًا
+         بنستخدم قائمته الحقيقية زي ما هي، ولو مش موجود بنعمله مرة واحدة بس.
+         كده مستحيل نولّد IDs جديدة فوق مكن موجودة (وده كان بييتم الأرصدة تحت IDs قديمة). */
       const DEFAULT_MACHINES = ["فوري", "اوبي", "أمان", "ممكن", "سوبر باي", "باب رزق"];
-      const seeded = DEFAULT_MACHINES.map(name => ({ id: genId(), name }));
-      state.machines = seeded;
-      saveMachines(seeded);
+      const ref = db.collection("meta").doc("machines");
+      db.runTransaction(async tx => {
+        const s2 = await tx.get(ref);
+        if (!s2.exists) {
+          const mc = loadMetaCache(); // ✦ E33: منع drift — نفس الاسم يرجّع نفس الـ ID القديم
+          const seeded = DEFAULT_MACHINES.map(name => {
+            const cached = (mc.machines || []).find(m => m && m.id && m.name === name);
+            return { id: cached ? cached.id : genId(), name };
+          });
+          tx.set(ref, { list: seeded });
+          return { list: seeded, created: true };
+        }
+        return { list: (s2.data() && s2.data().list) || [], created: false };
+      }).then(res => {
+        if (res.created || (Array.isArray(res.list) && res.list.length > 0)) {
+          state.machines = res.list;          // ✅ القائمة الفعلية من السيرفر — مش نسخة مخترعة
+          state.machinesReady = true;
+          saveMetaCacheSnapshot(); // ✦ E33
+          checkReady();
+          render();
+        }
+      }).catch(err => console.error("seed machines failed", err));
+      return;
+    } else {
+      return; // مستند موجود بس شكله غريب/فاضي — متلمسوش
     }
-    state.machinesReady = true;
     checkReady();
     render();
   }, err => {
@@ -1040,14 +1851,38 @@ function attachMachinesListener(retryCount) {
 
 function attachWalletNamesListener(retryCount) {
   const unsub = db.collection("meta").doc("walletNames").onSnapshot(snap => {
-    if (snap.exists) {
+    if (snap.metadata && snap.metadata.fromCache) return; // ✦ FIX
+    if (snap.exists && snap.data() && Object.keys(snap.data()).length > 0) {
       state.walletNames = snap.data();
-    } else if (!state.walletNamesReady) {
+      state.walletNamesReady = true;
+      saveMetaCacheSnapshot(); // ✦ E33
+    } else if (!snap.exists && !state.walletNamesReady) {
+      // ✦ FIX: نفس منطق المكن — القايمة الفعلية من السيرفر فقط، وممنوع استبدال IDs موجودة
       const defaults = { w1:"محفظة 1", w2:"محفظة 2", w3:"محفظة 3", w4:"محفظة 4" };
-      state.walletNames = defaults;
-      saveWalletNames(defaults);
+      // ✦ E33: منع drift — لو الكاش فيه محفظة بنفس الاسم، بنستخدم نفس الـ ID القديم
+      const wc = loadMetaCache().wallets || {};
+      Object.keys(defaults).slice().forEach(k => {
+        const cachedId = Object.keys(wc).find(cid => wc[cid] === defaults[k] && !(cid in defaults));
+        if (cachedId) { defaults[cachedId] = defaults[k]; delete defaults[k]; }
+      });
+      const ref = db.collection("meta").doc("walletNames");
+      db.runTransaction(async tx => {
+        const s2 = await tx.get(ref);
+        if (!s2.exists) { tx.set(ref, defaults); return defaults; }
+        return s2.data() || {};
+      }).then(actual => {
+        if (actual && Object.keys(actual).length > 0) {
+          state.walletNames = actual;
+          state.walletNamesReady = true;
+          saveMetaCacheSnapshot(); // ✦ E33
+          checkReady();
+          render();
+        }
+      }).catch(err => console.error("seed walletNames failed", err));
+      return;
+    } else {
+      return; // ✦ FIX: مستند موجود بس غريب — متلمسوش
     }
-    state.walletNamesReady = true;
     checkReady();
     render();
   }, err => {
@@ -1059,12 +1894,13 @@ function attachWalletNamesListener(retryCount) {
 
 function attachWalletLimitsListener(retryCount) {
   const unsub = db.collection("meta").doc("walletLimits").onSnapshot(snap => {
+    if (snap.metadata && snap.metadata.fromCache) return; // ✦ FIX
     if (snap.exists) {
       state.walletLimits = { w1:0, w2:0, w3:0, w4:0, ...snap.data() };
     } else if (!state.walletLimitsReady) {
       const defaults = { w1:0, w2:0, w3:0, w4:0 };
       state.walletLimits = defaults;
-      saveWalletLimits(defaults);
+      saveWalletLimits(defaults, null); // ✦ FIX: base=null → يكتب بس لو المستند مش موجود أصلًا على السيرفر
     }
     state.walletLimitsReady = true;
     render();
@@ -1078,13 +1914,36 @@ function attachWalletLimitsListener(retryCount) {
 /* ✦ NEW: listener لحسابات انستاباي */
 function attachInstapayAccountsListener(retryCount) {
   const unsub = db.collection("meta").doc("instapayAccounts").onSnapshot(snap => {
+    if (snap.metadata && snap.metadata.fromCache) return; // ✦ FIX
     if (snap.exists && snap.data().list && snap.data().list.length > 0) {
       state.instapayAccounts = snap.data().list;
-    } else if (!state.instapayAccountsReady) {
-      state.instapayAccounts = DEFAULT_INSTAPAY_ACCOUNTS.map(a => ({...a, id: genId()}));
-      saveInstapayAccounts(state.instapayAccounts);
+      state.instapayAccountsReady = true;
+      saveMetaCacheSnapshot(); // ✦ E33
+    } else if (!snap.exists && !state.instapayAccountsReady) {
+      // ✦ FIX: نفس منطق المكن — القايمة الفعلية من السيرفر فقط
+      // ✦ E33: منع drift — نفس الاسم يرجّع نفس الـ ID (من الكاش أو الـ ID الثابت الافتراضي)
+      const ic = loadMetaCache().instapay || [];
+      const seeded = DEFAULT_INSTAPAY_ACCOUNTS.map(a => {
+        const cached = ic.find(c => c && c.id && c.name === a.name);
+        return { ...a, id: cached ? cached.id : a.id };
+      });
+      const ref = db.collection("meta").doc("instapayAccounts");
+      db.runTransaction(async tx => {
+        const s2 = await tx.get(ref);
+        if (!s2.exists) { tx.set(ref, { list: seeded }); return { list: seeded }; }
+        return { list: (s2.data() && s2.data().list) || [] };
+      }).then(res => {
+        if (res.list && res.list.length > 0) {
+          state.instapayAccounts = res.list;
+          state.instapayAccountsReady = true;
+          saveMetaCacheSnapshot(); // ✦ E33
+          render();
+        }
+      }).catch(err => console.error("seed instapayAccounts failed", err));
+      return;
+    } else {
+      return;
     }
-    state.instapayAccountsReady = true;
     render();
   }, err => {
     console.error("instapayAccounts listener error (retry " + retryCount + ")", err);
@@ -1096,12 +1955,13 @@ function attachInstapayAccountsListener(retryCount) {
 /* ✦ NEW: listener لعمولات المحافظ */
 function attachWalletCommissionsListener(retryCount) {
   const unsub = db.collection("meta").doc("walletCommissions").onSnapshot(snap => {
+    if (snap.metadata && snap.metadata.fromCache) return; // ✦ FIX
     if (snap.exists) {
       state.walletCommissions = { w1:0, w2:0, w3:0, w4:0, ...snap.data() };
     } else if (!state.walletCommissionsReady) {
       const defaults = { w1:0, w2:0, w3:0, w4:0 };
       state.walletCommissions = defaults;
-      saveWalletCommissions(defaults);
+      saveWalletCommissions(defaults, null); // ✦ FIX: base=null → يكتب بس لو المستند مش موجود أصلًا
     }
     state.walletCommissionsReady = true;
     render();
@@ -1117,11 +1977,13 @@ let __dayUnsub = null; // ✦ NEW: مرجع لآخر اشتراك على مست�
 function attachDayListener(retryCount) {
   const unsub = db.collection("days").doc(state.today).onSnapshot(snap => {
     if (state.editingArchiveDay) return; // ✦ NEW: منع الكتابة فوق بيانات الأرشيف وقت التعديل
-    state.dayData = snap.exists ? snap.data() : emptyDay();
+    if (snap.metadata && snap.metadata.fromCache) return; // ✦ FIX: بيانات الكاش مش مصدر موثوق للأرصدة
+    state.dayData = ingestDayData(snap.exists ? snap.data() : emptyDay()); // ✦ E32: طبقة الربط التصحيحي
     state.dayReady = true;
     state.connectionError = null;
     checkReady();
     render();
+    discoverIdMappings(state.rawDayData); // ✦ E32: اكتشاف تلقائي صامت بعد تحميل اليوم
   }, err => {
     console.error("day listener error (retry " + retryCount + ")", err);
     if (retryCount < LISTENER_RETRY_DELAYS.length) {
@@ -1149,6 +2011,29 @@ function showConnectionError() {
   render();
 }
 
+/* ✦ NEW: شاشة قفل كاملة لما مفيش نت — بتحجب كل التطبيق ومفيش أي طريقة تستخدمه من غيرها */
+function renderOfflineScreen() {
+  return `
+    <div style="min-height:100vh; min-height:100svh; min-height:100dvh; min-height:calc(var(--vh100, 1vh) * 100); display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
+      <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:30px 22px 24px; border:1px solid var(--ink-10); text-align:center;">
+        <div class="empty-state-icon" style="margin:0 auto 16px; background:#f3e0da;">${icon("alert-triangle",{size:26,color:"var(--rust)"})}</div>
+        <div class="empty-state-title" style="color:var(--rust);">مفيش اتصال بالإنترنت</div>
+        <div class="empty-state-desc">التطبيق محتاج اتصال دايم بالإنترنت عشان يمنع أي تعارض في البيانات بين الأجهزة. وصّل بالنت وجرب تاني.</div>
+        <button class="primary-btn" onclick="retryConnectivity()" ${state.offlineRetrying ? "disabled" : ""}>
+          ${state.offlineRetrying ? "جاري المحاولة..." : "إعادة المحاولة"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+async function retryConnectivity() {
+  state.offlineRetrying = true;
+  render();
+  await checkConnectivity();
+  state.offlineRetrying = false;
+  if (!__isOnline) render();
+}
+
 /* ===============================================================
    Auth
    =============================================================== */
@@ -1164,15 +2049,25 @@ async function bootApp(retryCount) {
       firebase.initializeApp(FIREBASE_CONFIG);
       db = firebase.firestore();
       db.settings({ ignoreUndefinedProperties: true });
-      try { await db.enablePersistence({ synchronizeTabs: true }); } catch (e) { console.warn("offline persistence not enabled", e.code || e.message); }
+      /* ✦ NEW: تعطيل الكاش الأوفلاين نهائيًا — التطبيق ده لازم يشتغل أونلاين بس عشان يمنع تعارضات
+         بين الأجهزة (لو جهاز شغال أوفلاين ممكن يكتب فوق تعديلات جهاز تاني لما يرجع النت). */
       state.fbReady = true;
       firebase.auth().onAuthStateChanged(user => {
         state.authUser = user;
         state.authChecked = true;
         state.loginSubmitting = false;
-        if (user) { attachRealtimeListeners(); loadUserProfile(user); }
+        if (user) {
+          attachRealtimeListeners();
+          loadUserProfile(user);
+          syncServerTime(); // ✦ NEW: زامن ساعة السيرفر أول ما يسجّل دخول
+        }
         else { state.userProfile = null; state.userProfileReady = false; }
         render();
+      });
+      // ✦ NEW: أعد المزامنة كل 5 دقايق (ولما التاب يرجع نشط) عشان التوقيت يفضل دقيق طول الوقت
+      setInterval(() => { if (state.authUser) syncServerTime(); }, 5 * 60 * 1000);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && state.authUser) syncServerTime();
       });
     }
     state.connectionError = null;
@@ -1248,6 +2143,11 @@ function isAdmin() { return !!state.userProfile && state.userProfile.role === "a
 function canEdit() { return !!state.userProfile && (state.userProfile.role === "admin" || state.userProfile.role === "editor"); }
 function requireEdit() {
   if (!canEdit()) { alert("حسابك في وضع (رؤية فقط) ومش هيقدر يعدّل أو يضيف بيانات."); return false; }
+  return true;
+}
+/* ✦ NEW: صفحة الإعدادات وكل ما فيها (مكن/محافظ/انستاباي/ليميت/مستخدمين) للأدمن بس */
+function requireAdmin() {
+  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يوصل لصفحة الإعدادات."); return false; }
   return true;
 }
 function roleLabel(role) {
@@ -1359,6 +2259,7 @@ function deleteUser(id) {
 }
 function logout() {
   if (!confirm("تسجيل الخروج؟")) return;
+  releaseDayLock(); // ✦ NEW: سيب أي قفل ماسكه الجهاز ده قبل ما يخرج
   (state.unsubscribers || []).forEach(u => { try { u(); } catch(e) {} });
   state.unsubscribers = []; state.listenersAttached = false; state.ready = false;
   state.machinesReady = false; state.walletNamesReady = false; state.dayReady = false;
@@ -1461,8 +2362,69 @@ function tint15(color) {
 /* ===============================================================
    Render dispatch
    =============================================================== */
+/* ✦ حفظ/استرجاع حالة الواجهة (قيم الحقول + الفوكس + السكرول) حوالين أي render */
+let __lastRenderedSheet = null;
+
+function captureUiState() {
+  const snap = { sheet: __lastRenderedSheet, fields: {}, focusId: null, selStart: null, selEnd: null,
+                 winY: window.scrollY, sheetScroll: 0 };
+  const sb = document.getElementById("sheet-body");
+  if (sb) snap.sheetScroll = sb.scrollTop;
+  document.querySelectorAll("#shell input[id], #shell select[id], #shell textarea[id]").forEach(el => {
+    snap.fields[el.id] = (el.type === "checkbox" || el.type === "radio") ? { checked: el.checked } : { value: el.value };
+  });
+  const ae = document.activeElement;
+  if (ae && ae.id) {
+    snap.focusId = ae.id;
+    try { snap.selStart = ae.selectionStart; snap.selEnd = ae.selectionEnd; } catch (e) {}
+  }
+  return snap;
+}
+
+function restoreUiState(snap) {
+  if (snap.sheet === state.sheet) {
+    Object.keys(snap.fields).forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const s = snap.fields[id];
+      if ("checked" in s) el.checked = s.checked;
+      else if (el.value !== s.value) el.value = s.value;
+    });
+    const sb = document.getElementById("sheet-body");
+    if (sb) sb.scrollTop = snap.sheetScroll;
+    if (snap.focusId) {
+      const el = document.getElementById(snap.focusId);
+      if (el) {
+        el.focus({ preventScroll: true });
+        try { if (snap.selStart != null) el.setSelectionRange(snap.selStart, snap.selEnd); } catch (e) {}
+      }
+    }
+  }
+  window.scrollTo(0, snap.winY);
+  __lastRenderedSheet = state.sheet;
+}
+
 function render() {
+  const ae = document.activeElement;
+  if (state.sheet && ae && ae.matches && ae.matches("#sheet-body input, #sheet-body select, #sheet-body textarea")) {
+    // المستخدم بيكتب — أجّل الريندر لحد ما يخلص
+    clearTimeout(window.__deferRender);
+    window.__deferRender = setTimeout(render, 1500);
+    return;
+  }
+  const snap = captureUiState();
+  _renderCore();
+  restoreUiState(snap);
+}
+
+function _renderCore() {
   const root = document.getElementById("shell");
+  /* ✦ NEW: مفيش نت = مفيش تطبيق خالص. ده أول فحص قبل أي حاجة تانية (حتى قبل شاشة تسجيل الدخول)
+     عشان نمنع أي عملية أو حتى عرض بيانات قديمة وهمية وقت انقطاع النت. */
+  if (!__isOnline) {
+    root.innerHTML = renderOfflineScreen();
+    return;
+  }
   if (state.connectionError) {
     root.innerHTML = `
       <div class="loading-wrap">
@@ -1489,7 +2451,8 @@ function render() {
   if (state.tab === "today") bodyHtml = renderTodayView(live);
   else if (state.tab === "archive" && !state.viewDate) bodyHtml = renderArchiveView();
   else if (state.tab === "archive" && state.viewDate) bodyHtml = renderArchiveDetail();
-  else if (state.tab === "services") bodyHtml = renderServicesView();
+  else if (state.tab === "services" && isAdmin()) bodyHtml = renderServicesView();
+  else if (state.tab === "services" && !isAdmin()) { state.tab = "today"; bodyHtml = renderTodayView(live); }
 
   root.innerHTML = `
     ${renderHeader(state.dayData.status !== "not_started" ? profitTotal : null)}
@@ -1498,6 +2461,16 @@ function render() {
         ${icon("alert-triangle",{size:15,color:"#fff"})}
         <span style="flex:1;">${esc(state.saveError)}</span>
         <button class="icon-btn" onclick="state.saveError=null; render();">${icon("x",{size:14,color:"#fff"})}</button>
+      </div>` : ""}
+    ${state.remapNotice && !state.remapNotice.dismissed ? `
+      <div style="position:sticky; top:0; z-index:40; background:var(--emerald); color:#fff; padding:10px 16px; font-size:12.5px; display:flex; align-items:center; gap:8px;">
+        <span style="flex:1;">تم ربط ${state.remapNotice.ids.length} معرّف قديم بماكينة/محفظة حالية تلقائيًا — الأرصدة الأصلية محفوظة زي ما هي. (مراجعة أو إلغاء الربط: الإعدادات)</span>
+        <button class="icon-btn" onclick="dismissRemapNotice()">${icon("x",{size:14,color:"#fff"})}</button>
+      </div>` : ""}
+    ${state.activeDayLock ? `
+      <div style="position:sticky; top:0; z-index:40; background:var(--gold); color:#fff; padding:10px 16px; font-size:12.5px; display:flex; align-items:center; gap:8px;">
+        ${icon("alert-triangle",{size:15,color:"#fff"})}
+        <span style="flex:1;">${esc(state.activeDayLock.holderName)} بيعمل "${esc(state.activeDayLock.action || 'تعديل')}" على اليوم دلوقتي — استنى شوية</span>
       </div>` : ""}
     <div class="content">${bodyHtml}</div>
     ${renderTabBar()}
@@ -1555,6 +2528,9 @@ function renderHeader(profit) {
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:var(--ink-08); border-radius:10px;">
             ${icon("rotate-ccw", {size:17, color:"var(--header-fg)"})}
           </button>` : ""}` : ""}
+        <button class="icon-btn" title="تسجيل الخروج" onclick="logout()" style="background:var(--ink-08); border-radius:10px;">
+          ${icon("log-out", {size:17, color:"var(--header-fg)"})}
+        </button>
       </div>
     </div>
   `;
@@ -1564,7 +2540,7 @@ function renderTabBar() {
   const items = [
     { key: "today", label: "اليوم", i: "store", dot: state.dayData.status === "open" },
     { key: "archive", label: "الأرشيف", i: "archive" },
-    { key: "services", label: "الاعدادات", i: "settings" },
+    ...(isAdmin() ? [{ key: "services", label: "الاعدادات", i: "settings" }] : []),
   ];
   return `
     <div class="tab-bar-wrap">
@@ -1582,6 +2558,7 @@ function renderTabBar() {
 }
 
 function setTab(t) {
+  if (t === "services" && !isAdmin()) { return; } // ✦ NEW: منع فتح تاب الإعدادات لغير الأدمن حتى لو اتنادت الفانكشن يدويًا من الكونسول
   if (state.editingArchiveDay && t !== "archive") { exitArchiveEditMode(); }
   state.tab = t;
   state.viewDate = null;
@@ -1614,7 +2591,153 @@ function sectionHeader(key, label, extraRight) {
   `;
 }
 
-function renderBalancesGrid(live) {
+/* ===============================================================
+   ✦ NEW (حماية الأرصدة القديمة): أدوات رصد وعرض الأرصدة المسجّلة تحت IDs قديمة
+   (مكن/محافظ/انستاباي مش موجودة في الإعدادات الحالية). الأرصدة دي:
+   - محفوظة في مستند اليوم زي ما هي — عمرها ما بتتصفّر أو تتشال
+   - بتتعرض للمستخدم في قسم "أرصدة قديمة — تحتاج مراجعة" بدل ما تختفي
+   - بتفضل محفوظة مع كل عمليات البدء/الإغلاق/تعديل الافتتاحية
+   =============================================================== */
+function knownMachineIdSet() { return new Set((state.machines || []).map(m => m.id)); }
+function knownWalletIdSet() { return new Set(getWalletIds()); }
+function knownInstapayIdSet() { return new Set((state.instapayAccounts || []).map(a => a.id)); }
+function machineBalanceTotal(bal) {
+  if (bal && typeof bal === "object") return Object.keys(bal).reduce((s, k) => s + num(bal[k]), 0);
+  return num(bal);
+}
+/* بيانات اليوم المعروض حاليًا (اليوم الحالي، أو يوم الأرشيف المفتوح للعرض) —
+   مش يوم الشغل الحقيقي. بتستخدمها الشاشات اللي بتتعرض في وضع الأرشيف عشان تحسب من بيانات اليوم نفسه */
+function viewDayData() {
+  if (state.editingArchiveDay) return state.dayData;
+  if (state.viewDate && state.archiveDayData) return state.archiveDayData;
+  return state.dayData;
+}
+/* كل الأرصدة غير الصفرية المسجلة تحت IDs قديمة في بيانات يوم معين (افتتاحية + محسوبة) */
+function collectOrphanBalances(dayData) {
+  const d = dayData || {};
+  const o = d.opening || {};
+  const live = computeLive(d);
+  const km = knownMachineIdSet(), kw = knownWalletIdSet(), ki = knownInstapayIdSet();
+  const orphans = { machines: [], wallets: [], instapayAccounts: [], machineDebts: [] };
+  Object.keys(o.machines || {}).forEach(id => {
+    if (km.has(id)) return;
+    const openVal = o.machines ? o.machines[id] : undefined;
+    const liveVal = live.machines ? live.machines[id] : undefined;
+    if (Math.abs(machineBalanceTotal(openVal)) < 0.01 && Math.abs(machineBalanceTotal(liveVal)) < 0.01) return;
+    orphans.machines.push({ id, opening: openVal, live: liveVal });
+  });
+  Object.keys(o.wallets || {}).forEach(id => {
+    if (kw.has(id)) return;
+    const v = num(o.wallets ? o.wallets[id] : 0);
+    const lv = num(live.wallets ? live.wallets[id] : 0);
+    if (Math.abs(v) < 0.01 && Math.abs(lv) < 0.01) return;
+    orphans.wallets.push({ id, opening: v, live: lv });
+  });
+  (Object.keys(o.instapayAccounts || {})).forEach(id => {
+    if (ki.has(id)) return;
+    const v = num(o.instapayAccounts ? o.instapayAccounts[id] : 0);
+    const lv = num(live.instapayAccounts ? live.instapayAccounts[id] : 0);
+    if (Math.abs(v) < 0.01 && Math.abs(lv) < 0.01) return;
+    orphans.instapayAccounts.push({ id, opening: v, live: lv });
+  });
+  Object.keys(o.machineDebts || {}).forEach(id => {
+    if (km.has(id)) return;
+    const v = num(o.machineDebts ? o.machineDebts[id] : 0);
+    const lv = num(live.machineDebts ? live.machineDebts[id] : 0);
+    if (Math.abs(v) < 0.01 && Math.abs(lv) < 0.01) return;
+    orphans.machineDebts.push({ id, opening: v, live: lv, subs: (o.machineDebtSubs || {})[id] || null });
+  });
+  return orphans;
+}
+function orphanGrandTotal(orphans) {
+  if (!orphans) return 0;
+  return orphans.machines.reduce((s, x) => s + machineBalanceTotal(x.live), 0)
+    + orphans.wallets.reduce((s, x) => s + num(x.live), 0)
+    + orphans.instapayAccounts.reduce((s, x) => s + num(x.live), 0);
+}
+/* عرض قسم "أرصدة قديمة — تحتاج مراجعة" جوه شبكة الأرصدة (اليوم الحالي وأيام الأرشيف) */
+function renderOrphanBalancesSection(dayData) {
+  const orphans = collectOrphanBalances(dayData);
+  if (!orphans.machines.length && !orphans.wallets.length && !orphans.instapayAccounts.length && !orphans.machineDebts.length) return "";
+  const hidden = state.balancesHidden;
+  const fmt = v => hidden ? "••••" : money(v);
+  const machineCard = x => {
+    const isObj = x.live && typeof x.live === "object";
+    return `
+      <div class="balance-card" style="border:1.5px dashed var(--gold);">
+        <div class="balance-card-top" style="min-width:0;">
+          ${icon("landmark", {size:13, color:"var(--gold)"})}
+          <div style="min-width:0;">
+            <div class="balance-card-label" style="white-space:normal;">مكينة قديمة · <span dir="ltr">${esc(x.id)}</span></div>
+            <div style="font-size:10.5px; color:var(--ink-40);">ID غير مرتبط بإعدادات حالية</div>
+          </div>
+        </div>
+        ${isObj ? `
+          <div style="display:flex; flex-direction:column; gap:3px; margin-top:6px;">
+            ${Object.keys(x.live).map(s => `
+              <div style="display:flex; justify-content:space-between; font-size:11.5px;">
+                <span style="color:var(--ink-60);">${esc(s)}</span>
+                <span class="num" style="font-weight:700;">${fmt(num(x.live[s]))}</span>
+              </div>
+            `).join("")}
+          </div>
+        ` : `<div class="balance-card-value num">${fmt(machineBalanceTotal(x.live))}</div>`}
+      </div>
+    `;
+  };
+  const simpleCard = (label, id, val) => `
+    <div class="balance-card" style="border:1.5px dashed var(--gold);">
+      <div class="balance-card-top" style="min-width:0;">
+        ${icon(label === "محفظة قديمة" ? "wallet" : "smartphone", {size:13, color:"var(--gold)"})}
+        <div style="min-width:0;">
+          <div class="balance-card-label" style="white-space:normal;">${label} · <span dir="ltr">${esc(id)}</span></div>
+          <div style="font-size:10.5px; color:var(--ink-40);">ID غير مرتبط بإعدادات حالية</div>
+        </div>
+      </div>
+      <div class="balance-card-value num">${fmt(val)}</div>
+    </div>
+  `;
+  const debtRows = orphans.machineDebts.map(x => `
+    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px; padding:3px 0;">
+      <span style="font-size:12.5px; color:var(--ink);">مديونية مكينة قديمة · <span dir="ltr">${esc(x.id)}</span></span>
+      <span class="num" style="font-weight:700; color:var(--rust);">${fmt(num(x.live))}</span>
+    </div>
+  `).join("");
+  return `
+    ${sectionHeader("orphans", "أرصدة قديمة — تحتاج مراجعة", `<span class="num" style="font-size:13px; font-weight:700; color:var(--gold);">${fmt(orphanGrandTotal(orphans))}</span>`)}
+    ${state.collapsedSections.orphans ? `<div class="balance-collapsed-hint">أرصدة قديمة مخفية</div>` : `
+      <div class="warn-box" style="margin-bottom:10px; line-height:1.8; background:var(--paper-2);">
+        دي أرصدة مسجّلة في اليوم ده تحت IDs قديمة (مكن أو محافظ مش موجودة في الإعدادات الحالية).
+        <span style="font-weight:800;">محفوظة زي ما هي ولم ولن تتصفّر</span>، بس مش مرتبطة بأي مكينة/محفظة حالية.
+        لربطها أو مراجعتها استخدم <span style="font-weight:700;">أداة استرجاع الأرصدة</span> (ملف balance-recovery-tool.html).
+      </div>
+      <div class="balance-row2" style="margin-bottom:8px;">
+        ${orphans.machines.map(machineCard).join("")}
+        ${orphans.wallets.map(x => simpleCard("محفظة قديمة", x.id, num(x.live))).join("")}
+        ${orphans.instapayAccounts.map(x => simpleCard("انستاباي قديم", x.id, num(x.live))).join("")}
+      </div>
+      ${orphans.machineDebts.length ? `
+        <div class="balance-card" style="width:100%; border:1.5px dashed var(--gold);">
+          <div class="balance-card-top">${icon("alert-triangle", {size:13, color:"var(--gold)"})}<div class="balance-card-label">مديونيات قديمة (غير مرتبطة)</div></div>
+          ${debtRows}
+        </div>
+      ` : ""}
+    `}
+  `;
+}
+
+/* ✦ NEW: إجمالي أرصدة كل مكن الشحن مجمّعة مع بعض بإشارتها — فوري بيتجمع فيها الخانات الـ٣ (مدفوعات + خدمات موبايل + فيزا) */
+function computeMachinesTotal(live) {
+  return state.machines.reduce((sum, m) => {
+    const subs = machineSubs(m);
+    if (subs) {
+      return sum + subs.reduce((s2, sub) => s2 + machineBalValue(live.machines[m.id], sub), 0);
+    }
+    return sum + machineBalValue(live.machines[m.id]);
+  }, 0);
+}
+
+function renderBalancesGrid(live, dayData) {
   const c = state.collapsedSections;
   const eyeBtn = `
     <button class="toolbar-btn" title="${state.balancesHidden ? 'إظهار الأرصدة' : 'إخفاء الأرصدة'}" onclick="toggleBalancesHidden()">
@@ -1657,7 +2780,7 @@ function renderBalancesGrid(live) {
       `}
 
       ${state.machines.length ? `
-        ${sectionHeader("machines", "أرصدة مكن الشحن")}
+        ${sectionHeader("machines", "أرصدة مكن الشحن", machinesTotalInline(live))}
         ${c.machines ? `<div class="balance-collapsed-hint">مكن الشحن مخفية</div>` : `
           <div class="balance-row2" style="margin-bottom:8px;">
             ${state.machines.map(m => {
@@ -1668,6 +2791,8 @@ function renderBalancesGrid(live) {
           </div>
         `}
       ` : ""}
+
+      ${renderOrphanBalancesSection(dayData || viewDayData())}
     </div>
   `;
 }
@@ -1720,6 +2845,14 @@ function balanceCard(iconName, label, value, walletId) {
   `;
 }
 
+/* ✦ NEW: إجمالي أرصدة كل مكن الشحن — بيتحط جمب سهم الإظهار/الإخفاء في عنوان القسم */
+function machinesTotalInline(live) {
+  const total = computeMachinesTotal(live);
+  const neg = total < 0;
+  const display = state.balancesHidden ? "••••" : money(total);
+  return `<span class="num" style="font-size:13px; font-weight:700; color:${(neg && !state.balancesHidden) ? 'var(--rust)' : 'var(--ink)'};">${display}</span>`;
+}
+
 function fawryCard(m, live) {
   return `
     <div class="fawry-card">
@@ -1765,12 +2898,13 @@ function machineCard(m, live) {
 }
 /* ✦ NEW: تفاصيل حساب رصيد مكينة عادية (بدون بنود فرعية) — لتتبع مصدر أي رقم غريب */
 function renderSimpleMachineBreakdown(m) {
-  const o = state.dayData.opening || emptyOpening();
+  const vd = viewDayData(); // ✦ FIX: تفاصيل اليوم المعروض نفسه (أرشيف أو حالي) — مش يوم الشغل دايمًا
+  const o = vd.opening || emptyOpening();
   const openingVal = num(o.machines?.[m.id]);
   const rows = [];
   rows.push({ label: "الرصيد الافتتاحي", amount: openingVal, running: openingVal });
   let running = openingVal;
-  (state.dayData.transactions || []).forEach(t => {
+  (vd.transactions || []).forEach(t => {
     if (t.machineId !== m.id) return;
     let delta = 0, label = "";
     if (t.category === "machine" && !t.machineSub) { delta = -num(t.amount); label = `شحن مكن · ${t.time || ""}`; }
@@ -1799,12 +2933,13 @@ function toggleBalanceBreakdown(machineId) {
   render();
 }
 function renderBalanceBreakdown(m) {
-  const o = state.dayData.opening || emptyOpening();
+  const vd = viewDayData(); // ✦ FIX: تفاصيل اليوم المعروض نفسه (أرشيف أو حالي) — مش يوم الشغل دايمًا
+  const o = vd.opening || emptyOpening();
   const openingVal = machineBalValue(o.machines?.[m.id], "مدفوعات");
   const rows = [];
   rows.push({ label: "الرصيد الافتتاحي (مدفوعات)", amount: openingVal, running: openingVal });
   let running = openingVal;
-  (state.dayData.transactions || []).forEach(t => {
+  (vd.transactions || []).forEach(t => {
     if (t.machineId !== m.id) return;
     let delta = 0, label = "";
     if (t.category === "machine" && t.machineSub === "مدفوعات") { delta = -num(t.amount); label = `شحن مكن (مدفوعات) · ${t.time || ""}`; }
@@ -1855,7 +2990,7 @@ function islamCard(value) {
 /* ✦ NEW: كارت معلوماتي بس لعرض إجمالي عمولات المحافظ المتحصلة النهاردة — مش مربوط بالتقفيل ولا أي استعلام، مجرد عرض */
 function walletCommissionsInfoCard() {
   const totals = Object.fromEntries(getWalletIds().map(id => [id, 0]));
-  (state.dayData.transactions || []).forEach(t => {
+  (viewDayData().transactions || []).forEach(t => {
     if (t.category === "vodafone" && t.walletId && num(t.commission) > 0) {
       totals[t.walletId] = (totals[t.walletId] || 0) + num(t.commission);
     }
@@ -1888,7 +3023,7 @@ function walletCommissionsInfoCard() {
 function instapayCommissionsInfoCard() {
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const totals = Object.fromEntries(ipAccounts.map(acc => [acc.id, 0]));
-  (state.dayData.transactions || []).forEach(t => {
+  (viewDayData().transactions || []).forEach(t => {
     if (t.category === "instapay" && t.instapayAccountId && num(t.commission) > 0) {
       totals[t.instapayAccountId] = (totals[t.instapayAccountId] || 0) + num(t.commission);
     }
@@ -1984,7 +3119,7 @@ function renderTodayView(live) {
         </button>
       ` : ""}
     ` : ""}
-    ${renderBalancesGrid(live)}
+    ${renderBalancesGrid(live, state.dayData)}
     <div class="tx-list-header">
       <div class="tx-list-title">معاملات اليوم</div>
       <div class="tx-list-count" id="tx-list-count">${filterActive ? `${filteredTxs.length} من ${d.transactions.length}` : `${d.transactions.length} معاملة`}</div>
@@ -2183,7 +3318,16 @@ function renderClosedStamp(closing, live, closedBy) {
     if (subs) return subs.map(s => machineBalValue(closing.machines?.[m.id], s) - machineBalValue(live.machines?.[m.id], s));
     return [machineBalValue(closing.machines?.[m.id]) - machineBalValue(live.machines?.[m.id])];
   }).flat();
-  const machineDebtDiffs = state.machines.map(m => num(closing.machineDebts?.[m.id] ?? 0) - num(live.machineDebts?.[m.id]));
+  const machineDebtDiffs = state.machines.map(m => num(closing.machineDebts?.[m.id]) - num(live.machineDebts?.[m.id]));
+  /* ✦ FIX: الأرصدة القديمة (IDs مش في الميتا الحالية) بتدخل في مقارنة الإغلاق عشان
+     أي فرق فيها يظهر بدل ما ياخد شكل "مطابق" بالغلط */
+  const km = knownMachineIdSet(), kw = knownWalletIdSet(), ki = knownInstapayIdSet();
+  const orphanMachineIds = [...new Set([...Object.keys(closing.machines || {}), ...Object.keys(live.machines || {})])].filter(id => !km.has(id));
+  const orphanWalletIds = [...new Set([...Object.keys(closing.wallets || {}), ...Object.keys(live.wallets || {})])].filter(id => !kw.has(id));
+  const orphanIpIds = [...new Set([...Object.keys(closing.instapayAccounts || {}), ...Object.keys(live.instapayAccounts || {})])].filter(id => !ki.has(id));
+  const orphanMachineDiffs = orphanMachineIds.map(id => machineBalanceTotal(closing.machines?.[id]) - machineBalanceTotal(live.machines?.[id]));
+  const orphanWalletDiffs = orphanWalletIds.map(id => num(closing.wallets?.[id]) - num(live.wallets?.[id]));
+  const orphanIpDiffs = orphanIpIds.map(id => num(closing.instapayAccounts?.[id]) - num(live.instapayAccounts?.[id]));
   const diffs = [
     num(closing.drawer) - live.drawer,
     num(closing.machineDrawer) - live.machineDrawer,
@@ -2191,6 +3335,9 @@ function renderClosedStamp(closing, live, closedBy) {
     ...ipDiffs,
     ...machineDiffs,
     ...machineDebtDiffs,
+    ...orphanMachineDiffs,
+    ...orphanWalletDiffs,
+    ...orphanIpDiffs,
     num(closing.islamBalance) - live.islamBalance,
   ];
   const hasDeficit = diffs.some(d => d < -0.01);
@@ -2614,13 +3761,39 @@ function renderProfitBreakdownSheetBody() {
   `;
 }
 
-function confirmDeleteTx(id) {
+async function confirmDeleteTx(id) {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
+  // ✦ NEW (E29): يوم مقفول = مفيش كتابة معاملات عليه (إلا في وضع تعديل الأرشيف)
+  if (state.dayData.status === "closed" && !state.editingArchiveDay) {
+    const __closedMsg = "حالة اليوم مقفول — مينفعش تسجيل أو تعديل أو حذف معاملات على يوم مقفول. لو محتاج تعدّل، اضغط \"إعادة فتح اليوم\" الأول.";
+    alert(__closedMsg);
+    reportSaveError("حالة اليوم مقفول — العملية اترفضت. افتح اليوم تاني (إعادة فتح) لو محتاج تعدّل.");
+    return;
+  }
   if (confirm("تأكيد حذف المعاملة؟")) {
     const tx = state.dayData.transactions.find(t => t.id === id);
-    state.dayData = { ...state.dayData, transactions: state.dayData.transactions.filter(t => t.id !== id) };
-    persistDay(state.today, state.dayData);
-    if (tx) applyLimitDelta(tx, null);
+    const baseTxSnapshot = tx ? JSON.parse(JSON.stringify(tx)) : null; // ✦ NEW: للمقارنة وقت الحفظ
+    let savedDoc = null;
+    try {
+      // ✦ FIX: الحذف بيتطبق على أحدث نسخة من السيرفر — معاملة جهاز تاني مش هتضيع
+      savedDoc = await mutateDayTransactions(state.today, state.dayData.status, (serverTxs) => {
+        const idx = serverTxs.findIndex(t => t.id === id);
+        if (idx < 0) { const e = new Error("tx-target-changed"); e.code = "tx-target-changed"; throw e; }
+        if (baseTxSnapshot && JSON.stringify(serverTxs[idx]) !== JSON.stringify(baseTxSnapshot)) {
+          const e = new Error("tx-target-changed"); e.code = "tx-target-changed"; throw e;
+        }
+        return serverTxs.filter(t => t.id !== id);
+      });
+    } catch (err) {
+      console.error("confirmDeleteTx save failed", err);
+      const handled = err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "tx-target-changed" || err.code === "tx-invalid" || err.code === "day-missing" || err.code === "offline" || err.code === "no-db");
+      if (!handled) alert("حصل خطأ أثناء حذف المعاملة: " + ((err && (err.message || err.code)) || err));
+      return; // ✅ فشل الحذف = مفيش تغيير في الواجهة
+    }
+    state.dayData = ingestDayData(savedDoc); // ✦ E32
+    await applyLimitDelta(tx, null);
     render();
   }
 }
@@ -2629,10 +3802,121 @@ function attachTodayEvents() {}
 /* ===============================================================
    Start Day Sheet
    =============================================================== */
-function openStartSheet() { if (!requireEdit()) return; state.sheet = "start"; render(); }
-
-function confirmStartNewDay() {
+/* ✦ NEW: أحدث يوم مقفول قبل تاريخ معين — عشان نعبّي شاشة البدء باقتراحات أرصدة
+   من آخر جرد/رصيد فعلي، ونمنع تثبيت أصفار بالغلط. قراءة فقط — مفيش أي كتابة. */
+async function fetchLatestClosedDayBefore(beforeKey) {
+  if (!db) return null;
+  const snap = await db.collection("days").get();
+  let best = null;
+  (snap.docs || []).forEach(d => {
+    const k = d.id;
+    if (k >= beforeKey) return;
+    const data = d.data();
+    if (data && data.status === "closed" && (!best || k > best.key)) best = { key: k, data };
+  });
+  return best;
+}
+/* بناء الاقتراحات من يوم مقفول: لكل ID (حالي أو قديم) بناخد قيمة الجرد الفعلي (closing)
+   لو مسجّلة، وإلا الرصيد المحسوب من افتتاحية اليوم + معاملاته. مفيش أي اختراع أرقام. */
+function computeStartPrefillFromDay(prevData) {
+  const closing = (prevData && prevData.closing) || {};
+  const live = computeLive(prevData || emptyDay());
+  const has = (obj, k) => !!obj && Object.prototype.hasOwnProperty.call(obj, k);
+  const prefill = {
+    drawer: has(closing, "drawer") ? num(closing.drawer) : num(live.drawer),
+    machineDrawer: has(closing, "machineDrawer") ? num(closing.machineDrawer) : num(live.machineDrawer),
+    islamBalance: has(closing, "islamBalance") ? num(closing.islamBalance) : num(live.islamBalance),
+    wallets: {}, machines: {}, instapayAccounts: {}, machineDebts: {}, machineDebtSubs: {},
+  };
+  const walletIds = new Set([...Object.keys(((prevData||{}).opening||{}).wallets||{}), ...Object.keys(closing.wallets||{}), ...Object.keys(live.wallets||{})]);
+  const machineIds = new Set([...Object.keys(((prevData||{}).opening||{}).machines||{}), ...Object.keys(closing.machines||{}), ...Object.keys(live.machines||{})]);
+  const ipIds = new Set([...Object.keys(((prevData||{}).opening||{}).instapayAccounts||{}), ...Object.keys(closing.instapayAccounts||{}), ...Object.keys(live.instapayAccounts||{})]);
+  walletIds.forEach(id => { prefill.wallets[id] = has(closing.wallets, id) ? num(closing.wallets[id]) : num(live.wallets[id]); });
+  ipIds.forEach(id => { prefill.instapayAccounts[id] = has(closing.instapayAccounts, id) ? num(closing.instapayAccounts[id]) : num(live.instapayAccounts[id]); });
+  machineIds.forEach(id => {
+    const closingVal = has(closing.machines, id) ? closing.machines[id] : undefined;
+    prefill.machines[id] = (closingVal !== undefined) ? closingVal : live.machines[id];
+  });
+  machineIds.forEach(id => {
+    const hadOpeningDebt = has(((prevData||{}).opening||{}).machineDebts, id);
+    if (hadOpeningDebt || has(closing.machineDebts, id) || Math.abs(num((live.machineDebts||{})[id])) >= 0.01) {
+      prefill.machineDebts[id] = has(closing.machineDebts, id) ? num(closing.machineDebts[id]) : num(live.machineDebts[id]);
+    }
+  });
+  prefill.machineDebtSubs = { ...(((prevData||{}).opening||{}).machineDebtSubs||{}), ...(live.machineDebtSubs||{}) };
+  return prefill;
+}
+/* قيم جاهزة للعرض من الافتتاحية الحالية لليوم (لو الشاشة اتفتحت على يوم بدأ فعلًا) */
+function prefillFromOpening(o) {
+  o = o || {};
+  return {
+    drawer: num(o.drawer), machineDrawer: num(o.machineDrawer), islamBalance: num(o.islamBalance),
+    wallets: { ...(o.wallets||{}) }, machines: { ...(o.machines||{}) }, instapayAccounts: { ...(o.instapayAccounts||{}) },
+    machineDebts: { ...(o.machineDebts||{}) }, machineDebtSubs: { ...(o.machineDebtSubs||{}) },
+  };
+}
+/* إجمالي القيم المطلقة في كائن شبه-افتتاحي — لفحص "كله أصفار؟" */
+function openingAbsTotal(o) {
+  if (!o) return 0;
+  let t = Math.abs(num(o.drawer)) + Math.abs(num(o.machineDrawer)) + Math.abs(num(o.islamBalance));
+  Object.keys(o.wallets||{}).forEach(id => { t += Math.abs(num(o.wallets[id])); });
+  Object.keys(o.instapayAccounts||{}).forEach(id => { t += Math.abs(num(o.instapayAccounts[id])); });
+  Object.keys(o.machines||{}).forEach(id => { t += Math.abs(machineBalanceTotal(o.machines[id])); });
+  Object.keys(o.machineDebts||{}).forEach(id => { t += Math.abs(num(o.machineDebts[id])); });
+  return t;
+}
+/* كل الأرصدة القديمة (IDs مش في الميتا الحالية) الظاهرة في شاشة بدء اليوم:
+   من اقتراح آخر يوم مقفول + من مستند اليوم نفسه — قيم مستند اليوم الحالي ليها الأولوية */
+function collectStartSheetOldBalances() {
+  const pfv = (state.startSheetPrefill && state.startSheetPrefill.values) || null;
+  const cur = (state.dayData && state.dayData.opening) || {};
+  const km = knownMachineIdSet(), kw = knownWalletIdSet(), ki = knownInstapayIdSet();
+  const mergeUnknown = (a, b, known) => {
+    const out = {};
+    Object.keys(a || {}).forEach(id => { if (!known.has(id)) out[id] = a[id]; });
+    Object.keys(b || {}).forEach(id => { if (!known.has(id)) out[id] = b[id]; });
+    return out;
+  };
+  return {
+    machines: mergeUnknown(pfv && pfv.machines, cur.machines, km),
+    wallets: mergeUnknown(pfv && pfv.wallets, cur.wallets, kw),
+    instapayAccounts: mergeUnknown(pfv && pfv.instapayAccounts, cur.instapayAccounts, ki),
+    machineDebts: mergeUnknown(pfv && pfv.machineDebts, cur.machineDebts, km),
+    machineDebtSubs: mergeUnknown(pfv && pfv.machineDebtSubs, cur.machineDebtSubs, km),
+  };
+}
+function openStartSheet() {
   if (!requireEdit()) return;
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
+  state.sheet = "start";
+  if (state.dayData.status !== "not_started") {
+    // ✦ اليوم بدأ فعلًا — اعرض قيمه الحالية في الخانات بدل خانات فاضية (حماية من المسح بالخطأ)
+    state.startSheetPrefill = { fromKey: state.today, current: true, values: prefillFromOpening(state.dayData.opening) };
+    render();
+    return;
+  }
+  if (!state.startSheetPrefill && db) {
+    // ✦ NEW: نجيب أرصدة آخر يوم مقفول كاقتراحات قبل ما نسيب المستخدم يكتب حاجة
+    state.startSheetPrefill = { loading: true };
+    render();
+    fetchLatestClosedDayBefore(state.today).then(prev => {
+      if (state.sheet !== "start") return;
+      if (!prev) state.startSheetPrefill = { none: true }; // أول يوم شغل في حياة التطبيق — مفيش يوم سابق
+      else state.startSheetPrefill = { fromKey: prev.key, values: computeStartPrefillFromDay(prev.data) };
+      render();
+    }).catch(err => {
+      console.error("fetchLatestClosedDayBefore failed", err);
+      if (state.sheet === "start") { state.startSheetPrefill = { error: true, message: (err && (err.message || err.code)) || String(err) }; render(); }
+    });
+    return;
+  }
+  render();
+}
+
+async function confirmStartNewDay() {
+  if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
   if (state.dayData.status === "not_started") { openStartSheet(); return; }
   if (state.dayData.status === "closed") {
     // ✦ اليوم مقفول بالفعل — ابدأ يوم شغل جديد بتاريخ النهاردة الحقيقي، من غير أي مسح لبيانات اليوم المقفول
@@ -2640,48 +3924,98 @@ function confirmStartNewDay() {
     const freshKey = dateKey(new Date());
     const nextKey = freshKey !== closedKey ? freshKey : (closedKey + "-r" + Date.now()); // احتياطي نادر لو نفس التاريخ التقويمي
     if (!confirm("هيتم بدء يوم شغل جديد. بيانات اليوم المقفول الحالي هتفضل محفوظة زي ما هي في الأرشيف. متأكد؟")) return;
-    state.today = nextKey;
-    saveCurrentDayKey(nextKey);
-    state.dayReady = false;
-    switchDayListener();
-    state.dayData = emptyDay();
-    persistDay(state.today, state.dayData);
-    state.tab = "today"; state.sheet = null;
-    openStartSheet();
+    await runWithDayLock(closedKey, "بدء يوم جديد", async () => {
+      let freshData = null;
+      try {
+        // ✦ FIX: بننشئ اليوم الجديد من غير أي مسح — ولو التاريخ الجديد فيه أرصدة افتتاحية محفوظة (بنية ID قديمة مثلًا) بنحافظ عليها زي ما هي
+        freshData = await persistDayDoc(nextKey, { expectedStatus: "not_started" }, (cur) => ({ ...(cur || emptyDay()), status: "not_started" }));
+      } catch (err) {
+        if (err && (err.code === "day-status-changed" || err.code === "offline" || err.code === "no-db")) return;
+        alert("تعذر بدء اليوم الجديد: " + ((err && (err.message || err.code)) || err));
+        return;
+      }
+      state.today = nextKey;
+      saveCurrentDayKey(nextKey);
+      state.dayReady = false;
+      state.startSheetPrefill = null; // ✦ عشان نجيب اقتراحات جديدة خاصة باليوم الجديد
+      switchDayListener();
+      state.dayData = ingestDayData(freshData); // ✦ E32
+      state.dayReady = true; // ✦ معانا أحدث نسخة من السيرفر فعليًا — اسمح بفتح شاشة البدء فورًا
+      state.tab = "today"; state.sheet = null;
+      openStartSheet(); // ✦ الشاشة هتتعبى باقتراحات من اليوم المقفول اللي فات تلقائيًا
+    }).catch(() => {});
     return;
   }
   // اليوم لسه مفتوح (مش مقفول) — ده تصحيح غلطة على نفس اليوم
-  if (!confirm("اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي. متأكد؟")) return;
-  if (db && (state.dayData.transactions || []).length > 0) {
-    db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
-      .catch(err => console.error("backup before reset failed", err));
-  }
-  state.dayData = emptyDay();
-  persistDay(state.today, state.dayData);
-  state.tab = "today"; state.sheet = null;
-  openStartSheet();
+  if (!confirm("اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي (هتتاخد نسخة احتياطية كاملة أوّلًا في days_backup). متأكد؟")) return;
+  const baseRev = (typeof state.dayData.rev === "number") ? state.dayData.rev : undefined;
+  await runWithDayLock(state.today, "بدء يوم جديد (إعادة تعيين)", async () => {
+    let freshData = null;
+    try {
+      freshData = await persistDayDoc(state.today, { expectedStatus: state.dayData.status, baseRev }, (cur, tx) => {
+        // ✅ نسخة احتياطية كاملة جوه نفس المعاملة قبل أي مسح — قابلة للاسترجاع بأداة الاسترجاع
+        if (cur && Array.isArray(cur.transactions) && cur.transactions.length > 0 && tx) {
+          tx.set(db.collection("days_backup").doc(state.today + "__reset_" + Date.now()),
+            { ...cur, backupReason: "قبل إعادة تعيين اليوم (بدء يوم جديد فوق يوم مفتوح)", backedUpAtMs: serverNowMs(), backupKey: state.today });
+        }
+        return { ...emptyDay() };
+      });
+    } catch (err) {
+      if (err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "offline" || err.code === "no-db")) return;
+      alert("تعذر إعادة تعيين اليوم: " + ((err && (err.message || err.code)) || err));
+      return;
+    }
+    state.dayData = ingestDayData(freshData); // ✦ E32
+    state.tab = "today"; state.sheet = null;
+    state.startSheetPrefill = null;
+    openStartSheet();
+  }).catch(() => {});
 }
 
-function reopenDay() {
+async function reopenDay() {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
   if (state.dayData.status !== "closed") return;
   if (!confirm("هيتم إعادة فتح اليوم عشان تقدر تضيف أو تعدّل معاملات فيه تاني. لما تخلّص تقدر تقفله تاني عادي. متأكد؟")) return;
-  state.dayData = { ...state.dayData, status: "open" };
-  persistDay(state.today, state.dayData);
-  render();
+  const baseRev = (typeof state.dayData.rev === "number") ? state.dayData.rev : undefined;
+  await runWithDayLock(state.today, "إعادة فتح اليوم", async () => {
+    let savedDoc = null;
+    try {
+      // ✦ FIX: إعادة الفتح بتتطبق على أحدث نسخة من السيرفر (كل المعاملات والأرصدة بتفضل زي ما هي)
+      savedDoc = await persistDayDoc(state.today, { expectedStatus: "closed", baseRev }, (cur) => {
+        if (!cur) throw Object.assign(new Error("day-missing"), { code: "day-missing" });
+        return { ...cur, status: "open" };
+      });
+    } catch (err) {
+      if (err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "day-missing" || err.code === "offline" || err.code === "no-db")) return;
+      alert("حصل خطأ أثناء إعادة فتح اليوم: " + ((err && (err.message || err.code)) || err));
+      return;
+    }
+    state.dayData = ingestDayData(savedDoc); // ✦ E32
+    render();
+  }).catch(() => {});
 }
 
 function renderStartSheet() {
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
+  const pf = state.startSheetPrefill;
+  const pfv = (pf && pf.values) || null;
+  const oldBals = collectStartSheetOldBalances();
+  const oldIds = [...new Set([...Object.keys(oldBals.machines), ...Object.keys(oldBals.wallets), ...Object.keys(oldBals.instapayAccounts), ...Object.keys(oldBals.machineDebts)])];
+  const pv = x => (x === undefined || x === null) ? "" : String(num(x) || "");
   return `
+    ${pf && pf.loading ? `<div class="warn-box" style="margin-bottom:12px;">جاري جلب أرصدة آخر يوم مقفول كاقتراح…</div>` : ""}
+    ${pfv ? `<div class="warn-box" style="margin-bottom:12px; line-height:1.8;">تم تعبئة الأرقام ${pf.current ? "بقيم اليوم الحالية" : `باقتراح من آخر يوم مقفول (${esc(displayDate(pf.fromKey))}) — جرد الإغلاق لو مسجّل، وإلا الرصيد المحسوب`}. <span style="font-weight:800;">راجعها وعدّلها لو مختلفة عن الواقع قبل الحفظ.</span></div>` : ""}
+    ${pf && pf.error ? `<div class="warn-box" style="margin-bottom:12px; color:var(--rust);">تعذّر جلب أرصدة آخر يوم مقفول. لأمان الأرصدة، زرار البدء مش شغال غير بعد ما نجيبها — تأكد من الاتصال وافتح الشاشة تاني.</div>` : ""}
     <div class="field-row">
       <div class="field">
         <div class="field-label">الدرج (كاش)</div>
-        <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-drawer">
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-drawer" value="${pv(pfv && pfv.drawer)}">
       </div>
       <div class="field">
         <div class="field-label">الدرج (مكن)</div>
-        <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machineDrawer">
+        <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machineDrawer" value="${pv(pfv && pfv.machineDrawer)}">
       </div>
     </div>
     <div style="font-size:13px;font-weight:700;color:var(--ink);margin:4px 2px 8px;">المحافظ الإلكترونية</div>
@@ -2689,7 +4023,7 @@ function renderStartSheet() {
       ${getWalletIds().map(id => `
         <div class="field">
           <div class="field-label">${esc(state.walletNames[id])}</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-wallet-${id}">
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-wallet-${id}" value="${pv(pfv && pfv.wallets && pfv.wallets[id])}">
         </div>
       `).join("")}
     </div>
@@ -2698,7 +4032,7 @@ function renderStartSheet() {
       ${ipAccounts.map(acc => `
         <div class="field">
           <div class="field-label">${esc(acc.name)}</div>
-          <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-instapay-${acc.id}">
+          <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-instapay-${acc.id}" value="${pv(pfv && pfv.instapayAccounts && pfv.instapayAccounts[acc.id])}">
         </div>
       `).join("")}
     </div>
@@ -2710,10 +4044,10 @@ function renderStartSheet() {
           if (subs) return subs.map(s => `
             <div class="field">
               <div class="field-label">${esc(m.name)} - ${s}</div>
-              <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}-${s}">
+              <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}-${s}" value="${pv(pfv && pfv.machines ? machineBalValue(pfv.machines[m.id], s) : undefined)}">
             </div>
           `).join("");
-          return `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}"></div>`;
+          return `<div class="field"><div class="field-label">${esc(m.name)}</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-machine-${m.id}" value="${pv(pfv && pfv.machines ? pfv.machines[m.id] : undefined)}"></div>`;
         }).join("")}
       </div>
     `}
@@ -2723,13 +4057,13 @@ function renderStartSheet() {
         ${state.machines.map(m => {
           const subs = machineSubs(m);
           if (subs) return `
-            <div class="field"><div class="field-label">${esc(m.name)} - مديونية مدفوعات</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}-مدفوعات"></div>
-            <div class="field"><div class="field-label">${esc(m.name)} - مديونية خدمات موبايل</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}-خدمات موبايل"></div>
+            <div class="field"><div class="field-label">${esc(m.name)} - مديونية مدفوعات</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}-مدفوعات" value="${pv(pfv && pfv.machineDebtSubs ? num(pfv.machineDebtSubs[m.id]?.["مدفوعات"]) : undefined)}"></div>
+            <div class="field"><div class="field-label">${esc(m.name)} - مديونية خدمات موبايل</div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}-خدمات موبايل" value="${pv(pfv && pfv.machineDebtSubs ? num(pfv.machineDebtSubs[m.id]?.["خدمات موبايل"]) : undefined)}"></div>
           `;
           return `
           <div class="field">
             <div class="field-label">${esc(m.name)}</div>
-            <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}">
+            <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-debt-${m.id}" value="${pv(pfv && pfv.machineDebts ? pfv.machineDebts[m.id] : undefined)}">
           </div>
         `;
         }).join("")}
@@ -2737,15 +4071,44 @@ function renderStartSheet() {
     `}
     <div class="field">
       <div class="field-label">رصيد حساب إسلام (لو فيه رصيد سابق)</div>
-      <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-islam">
+      <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-islam" value="${pv(pfv && pfv.islamBalance)}">
     </div>
+    ${oldIds.length ? `
+    <div style="font-size:13px;font-weight:800;color:var(--gold);margin:18px 2px 4px;">أرصدة قديمة — تحتاج مراجعة (محفوظة وهتتسجل زي ما هي)</div>
+    <div style="font-size:11.5px;color:var(--ink-60);margin:0 2px 10px;line-height:1.7;">
+      دي أرصدة مسجّلة تحت IDs قديمة مش موجودة في الإعدادات الحالية (من آخر يوم مقفول أو من مستند اليوم نفسه).
+      عدّلها لو حابب، ولو مش عارف تربطها استخدم أداة استرجاع الأرصدة (ملف balance-recovery-tool.html).
+    </div>
+    <div class="field-2col">
+      ${Object.keys(oldBals.machines).map(id => {
+        const val = oldBals.machines[id];
+        if (val && typeof val === "object") {
+          return Object.keys(val).map(s => `
+            <div class="field">
+              <div class="field-label">مكينة قديمة · <span dir="ltr">${esc(id)}</span> - ${s}</div>
+              <input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-old-machine-${id}-${s}" value="${num(val[s]) || ''}">
+            </div>
+          `).join("");
+        }
+        return `<div class="field"><div class="field-label">مكينة قديمة · <span dir="ltr">${esc(id)}</span></div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-old-machine-${id}" value="${num(val) || ''}"></div>`;
+      }).join("")}
+      ${Object.keys(oldBals.wallets).map(id => `<div class="field"><div class="field-label">محفظة قديمة · <span dir="ltr">${esc(id)}</span></div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-old-wallet-${id}" value="${num(oldBals.wallets[id]) || ''}"></div>`).join("")}
+      ${Object.keys(oldBals.instapayAccounts).map(id => `<div class="field"><div class="field-label">انستاباي قديم · <span dir="ltr">${esc(id)}</span></div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-old-instapay-${id}" value="${num(oldBals.instapayAccounts[id]) || ''}"></div>`).join("")}
+      ${Object.keys(oldBals.machineDebts).map(id => `<div class="field"><div class="field-label">مديونية مكينة قديمة · <span dir="ltr">${esc(id)}</span></div><input type="number" inputmode="decimal" class="input" placeholder="0" id="sd-old-debt-${id}" value="${num(oldBals.machineDebts[id]) || ''}"></div>`).join("")}
+    </div>
+    ` : ""}
   `;
 }
 
-function submitStartDay() {
+async function submitStartDay() {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
+  const pf = state.startSheetPrefill;
+  if (pf && pf.loading) { alert("لسه بجيب أرصدة آخر يوم مقفول كاقتراح — استنى ثانية وحاول تاني."); return; }
+  if (pf && pf.error) { alert("تعذّر تحميل بيانات آخر يوم مقفول. لأمان الأرصدة، مش هنبدأ اليوم من غير مراجعتها — تأكد من الاتصال وافتح الشاشة تاني."); return; }
   if (state.dayData.status !== "not_started" && (state.dayData.transactions || []).length > 0) {
-    if (!confirm("فيه معاملات مسجلة بالفعل النهاردة! لو كملت هيتمسحوا نهائيًا. متأكد؟")) return;
+    if (!confirm("فيه معاملات مسجلة بالفعل النهاردة! لو كملت هيتمسحوا (هتتاخد نسخة احتياطية أوّلًا في days_backup). متأكد؟")) return;
   }
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const instapayAccountsData = {};
@@ -2786,12 +4149,82 @@ function submitStartDay() {
     })),
     islamBalance: num(document.getElementById("sd-islam").value),
   };
-  const nd = { ...emptyDay(), status: "open", opening, openedBy: state.userProfile?.username || "" };
-  state.dayData = nd;
-  persistDay(state.today, nd);
-  state.sheet = null;
-  state.txFilter = { category: "all", q: "" };
-  render();
+  { // ✦ FIX: أرصدة الـ IDs القديمة من شاشة البدء — اللي مالهوش input بيفضل بقيمته الأصلية (عمره ما يتصفّر)
+    const oldBals = collectStartSheetOldBalances();
+    Object.keys(oldBals.machines).forEach(id => {
+      const curVal = oldBals.machines[id];
+      if (curVal && typeof curVal === "object") {
+        const obj = { ...curVal };
+        Object.keys(curVal).forEach(s => {
+          obj[s] = readOldBalanceInput(`sd-old-machine-${id}-${s}`, num(curVal[s]));
+        });
+        opening.machines[id] = obj;
+      } else {
+        opening.machines[id] = readOldBalanceInput(`sd-old-machine-${id}`, num(curVal));
+      }
+    });
+    Object.keys(oldBals.wallets).forEach(id => {
+      opening.wallets[id] = readOldBalanceInput(`sd-old-wallet-${id}`, num(oldBals.wallets[id]));
+    });
+    Object.keys(oldBals.instapayAccounts).forEach(id => {
+      opening.instapayAccounts[id] = readOldBalanceInput(`sd-old-instapay-${id}`, num(oldBals.instapayAccounts[id]));
+    });
+    Object.keys(oldBals.machineDebts).forEach(id => {
+      opening.machineDebts[id] = readOldBalanceInput(`sd-old-debt-${id}`, num(oldBals.machineDebts[id]));
+    });
+    opening.machineDebtSubs = { ...(oldBals.machineDebtSubs || {}), ...opening.machineDebtSubs };
+  }
+  // ✦ NEW: حماية من تثبيت أصفار بالغلط — لو الأرصدة المرجعية مش صفرية والمُدخل كله صفر، لزم تأكيد صريح
+  if (pf && pf.values && !pf.current) {
+    const pfTotal = openingAbsTotal(pf.values);
+    const subTotal = openingAbsTotal(opening);
+    if (pfTotal > 0.005 && subTotal < 0.005) {
+      if (!confirm(`تحذير مهم:\nآخر يوم مقفول (${displayDate(pf.fromKey)}) كانت فيه أرصدة إجماليها ${money(pfTotal)} ج.م.\nالقيم اللي محفوظها دلوقتي كلها صفر.\n\nمتأكد إنك عايز كده؟\n(بيانات الأيام القديمة مش هتتمسح — بس رصيد اليوم الجديد هيبدأ من الصفر)`)) return;
+    }
+  }
+  const expectedStatus = state.dayData.status; // الحالة اللي إحنا شايفينها دلوقتي قبل الكتابة
+  const baseRev = (typeof state.dayData.rev === "number") ? state.dayData.rev : undefined; // ✦ NEW: فحص النسخة
+  await runWithDayLock(state.today, "بدء اليوم", async () => {
+    let savedDoc = null;
+    try {
+      savedDoc = await persistDayDoc(state.today, { expectedStatus, baseRev }, (cur, tx) => {
+        // ✦ لو فيه معاملات على السيرفر مش شايفينها (جهاز تاني سجّل في نفس اللحظة) — نسخة احتياطية أوّلًا جوه نفس المعاملة
+        const serverTxs = (cur && Array.isArray(cur.transactions)) ? cur.transactions : [];
+        if (serverTxs.length > 0 && tx) {
+          tx.set(db.collection("days_backup").doc(state.today + "__start_" + Date.now()),
+            { ...cur, backupReason: "قبل بدء اليوم (كان فيه معاملات مسجّلة)", backedUpAtMs: serverNowMs(), backupKey: state.today });
+        }
+        const so = (cur && cur.opening) || {};
+        const lo = state.dayData.opening || {};
+        return {
+          status: "open",
+          openedBy: currentUserName(),
+          opening: {
+            drawer: opening.drawer,
+            machineDrawer: opening.machineDrawer,
+            islamBalance: opening.islamBalance,
+            instapay: 0,
+            instapayAccounts: threeWayMergeMaps(lo.instapayAccounts, so.instapayAccounts, opening.instapayAccounts),
+            machines: threeWayMergeMaps(lo.machines, so.machines, opening.machines),
+            wallets: threeWayMergeMaps(lo.wallets, so.wallets, opening.wallets),
+            machineDebts: threeWayMergeMaps(lo.machineDebts, so.machineDebts, opening.machineDebts),
+            machineDebtSubs: threeWayMergeMaps(lo.machineDebtSubs, so.machineDebtSubs, opening.machineDebtSubs),
+          },
+          transactions: [],
+          closing: null, closedAt: null, closedBy: null,
+        };
+      });
+    } catch (err) {
+      if (err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "offline" || err.code === "no-db")) return; // الرسالة اتعرضت بالفعل فوق
+      alert("حصل خطأ أثناء بدء اليوم: " + ((err && (err.message || err.code)) || err));
+      return;
+    }
+    state.dayData = ingestDayData(savedDoc); // ✦ E32
+    state.sheet = null;
+    state.startSheetPrefill = null;
+    state.txFilter = { category: "all", q: "" };
+    render();
+  }).catch(() => {});
 }
 
 /* ===============================================================
@@ -2799,6 +4232,7 @@ function submitStartDay() {
    =============================================================== */
 function openEditOpeningSheet() {
   if (!requireEdit()) return;
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
   if (state.dayData.status === "not_started") { alert("لسه اليوم مبدأش."); return; }
   state.eoSelectedDate = state.today;
   state.eoAvailableDates = [];
@@ -2829,6 +4263,40 @@ function refreshEditOpeningSheetOnly() {
 function onEoDateChange(val) {
   state.eoSelectedDate = val;
   refreshEditOpeningSheetOnly();
+}
+
+/* ✦ NEW: عرض أرصدة الـ IDs القديمة (غير الظاهرة في الإعدادات) في شاشة تعديل الافتتاحية —
+   قابلة للتعديل، واللي مش موجود منه input بيفضل بقيمته الأصلية عند الحفظ (مفيش تصفير أبدًا) */
+function renderEditOpeningOldBalances(o) {
+  const km = knownMachineIdSet(), kw = knownWalletIdSet(), ki = knownInstapayIdSet();
+  const oldMachines = {}, oldWallets = {}, oldInstapay = {}, oldDebts = {};
+  Object.keys(o.machines || {}).forEach(id => { if (!km.has(id) && Math.abs(machineBalanceTotal(o.machines[id])) >= 0.01) oldMachines[id] = o.machines[id]; });
+  Object.keys(o.wallets || {}).forEach(id => { if (!kw.has(id) && Math.abs(num(o.wallets[id])) >= 0.01) oldWallets[id] = num(o.wallets[id]); });
+  Object.keys(o.instapayAccounts || {}).forEach(id => { if (!ki.has(id) && Math.abs(num(o.instapayAccounts[id])) >= 0.01) oldInstapay[id] = num(o.instapayAccounts[id]); });
+  Object.keys(o.machineDebts || {}).forEach(id => { if (!km.has(id) && Math.abs(num(o.machineDebts[id])) >= 0.01) oldDebts[id] = num(o.machineDebts[id]); });
+  const anyOld = Object.keys(oldMachines).length || Object.keys(oldWallets).length || Object.keys(oldInstapay).length || Object.keys(oldDebts).length;
+  if (!anyOld) return "";
+  const field = (label, id, val, inputId) => `<div class="field"><div class="field-label">${label} · <span dir="ltr">${esc(id)}</span></div><input type="number" inputmode="decimal" class="input" placeholder="0" id="${inputId}" value="${num(val) || ''}"></div>`;
+  return `
+    <div style="font-size:13px;font-weight:800;color:var(--gold);margin:18px 2px 4px;">أرصدة قديمة — تحتاج مراجعة</div>
+    <div style="font-size:11.5px;color:var(--ink-60);margin:0 2px 10px;line-height:1.7;">
+      دي أرصدة مسجّلة تحت IDs قديمة مش موجودة في الإعدادات الحالية. عدّلها من هنا لو حابب،
+      ولو مش عارف تربطها استخدم أداة استرجاع الأرصدة (ملف balance-recovery-tool.html).
+      أي رصيد قديم مش ظاهر هنا (قيمته صفر) هيفضل محفوظ زي ما هو.
+    </div>
+    <div class="field-2col">
+      ${Object.keys(oldMachines).map(id => {
+        const val = oldMachines[id];
+        if (val && typeof val === "object") {
+          return Object.keys(val).map(s => field(`مكينة قديمة - ${s}`, id, val[s], `eo-old-machine-${id}-${s}`)).join("");
+        }
+        return field("مكينة قديمة", id, val, `eo-old-machine-${id}`);
+      }).join("")}
+      ${Object.keys(oldWallets).map(id => field("محفظة قديمة", id, oldWallets[id], `eo-old-wallet-${id}`)).join("")}
+      ${Object.keys(oldInstapay).map(id => field("انستاباي قديم", id, oldInstapay[id], `eo-old-instapay-${id}`)).join("")}
+      ${Object.keys(oldDebts).map(id => field("مديونية مكينة قديمة", id, oldDebts[id], `eo-old-debt-${id}`)).join("")}
+    </div>
+  `;
 }
 
 function renderEditOpeningSheet() {
@@ -2901,11 +4369,14 @@ function renderEditOpeningSheet() {
       </div>
     `}
     <div class="field"><div class="field-label">رصيد حساب إسلام</div><input type="number" inputmode="decimal" class="input" value="${o.islamBalance || ''}" id="eo-islam"></div>
+    ${renderEditOpeningOldBalances(o)}
   `;
 }
 
-function submitEditOpening() {
+async function submitEditOpening() {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const instapayAccountsData = {};
   ipAccounts.forEach(acc => {
@@ -2951,34 +4422,94 @@ function submitEditOpening() {
     })),
     islamBalance: num(document.getElementById("eo-islam").value),
   };
-
+  { // ✦ FIX: أرصدة الـ IDs القديمة — اللي ظاهر في الشاشة بيتقرأ من الـ inputs، واللي مش ظاهر بيفضل من الداتا بيز (مفيش تصفير)
+    const cur = state.dayData.opening || {};
+    const km = knownMachineIdSet(), kw = knownWalletIdSet(), ki = knownInstapayIdSet();
+    Object.keys(cur.machines || {}).forEach(id => {
+      if (km.has(id)) return;
+      const curVal = cur.machines[id];
+      if (curVal && typeof curVal === "object") {
+        const obj = { ...curVal };
+        Object.keys(curVal).forEach(s => { obj[s] = readOldBalanceInput(`eo-old-machine-${id}-${s}`, num(curVal[s])); });
+        opening.machines[id] = obj;
+      } else {
+        opening.machines[id] = readOldBalanceInput(`eo-old-machine-${id}`, num(curVal));
+      }
+    });
+    Object.keys(cur.wallets || {}).forEach(id => { if (!kw.has(id)) opening.wallets[id] = readOldBalanceInput(`eo-old-wallet-${id}`, num(cur.wallets[id])); });
+    Object.keys(cur.instapayAccounts || {}).forEach(id => { if (!ki.has(id)) opening.instapayAccounts[id] = readOldBalanceInput(`eo-old-instapay-${id}`, num(cur.instapayAccounts[id])); });
+    Object.keys(cur.machineDebts || {}).forEach(id => { if (!km.has(id)) opening.machineDebts[id] = readOldBalanceInput(`eo-old-debt-${id}`, num(cur.machineDebts[id])); });
+    opening.machineDebtSubs = { ...(cur.machineDebtSubs || {}), ...opening.machineDebtSubs };
+  }
   const newDate = state.eoSelectedDate || state.today;
   const oldDate = state.today;
 
   if (newDate !== oldDate) {
-    // ✦ NEW: المستخدم غيّر تاريخ اليوم — انقل يوم الشغل بالكامل للتاريخ الجديد
-    if (!confirm(`هيتم نقل يوم الشغل بالكامل لتاريخ ${displayDate(newDate)} بدل ${displayDate(oldDate)}. متأكد؟`)) return;
-    const newDayData = { ...state.dayData, opening };
-    persistDay(newDate, newDayData);
-    // لو اليوم القديم كان لسه فاضي (لم يبدأ)، امسحه عشان منسيبش مستند يتيم في الأرشيف
-    if (state.dayData.status === "not_started" && db) {
-      db.collection("days").doc(oldDate).delete().catch(err => console.warn("cleanup old empty day failed", err));
-    }
-    state.today = newDate;
-    saveCurrentDayKey(newDate);
-    state.dayData = newDayData;
-    state.dayReady = false;
-    switchDayListener();
-    state.eoSelectedDate = null;
-    state.sheet = null;
-    render();
+    // ✦ المستخدم غيّر تاريخ اليوم — انقل يوم الشغل بالكامل للتاريخ الجديد في معاملة ذرّية واحدة (مع نسخة احتياطية)
+    if (!confirm(`هيتم نقل يوم الشغل بالكامل لتاريخ ${displayDate(newDate)} بدل ${displayDate(oldDate)} (مع نسخة احتياطية أوّلًا). متأكد؟`)) return;
+    const oldRev = (typeof state.dayData.rev === "number") ? state.dayData.rev : undefined;
+    await runWithDayLock(oldDate, "تعديل الأرصدة الافتتاحية (نقل تاريخ)", async () => {
+      let movedDoc = null;
+      try {
+        movedDoc = await moveDayDocument(oldDate, newDate, {
+          oldRev,
+          transform: (serverOldData) => {
+            const so = serverOldData.opening || {};
+            const lo = state.dayData.opening || {};
+            return { ...serverOldData, opening: {
+              drawer: opening.drawer, machineDrawer: opening.machineDrawer, islamBalance: opening.islamBalance, instapay: 0,
+              instapayAccounts: threeWayMergeMaps(lo.instapayAccounts, so.instapayAccounts, opening.instapayAccounts),
+              machines: threeWayMergeMaps(lo.machines, so.machines, opening.machines),
+              wallets: threeWayMergeMaps(lo.wallets, so.wallets, opening.wallets),
+              machineDebts: threeWayMergeMaps(lo.machineDebts, so.machineDebts, opening.machineDebts),
+              machineDebtSubs: threeWayMergeMaps(lo.machineDebtSubs, so.machineDebtSubs, opening.machineDebtSubs),
+            }};
+          },
+        });
+      } catch (err) {
+        if (err && (err.code === "move-target-not-empty" || err.code === "move-old-missing" || err.code === "day-rev-conflict" || err.code === "move-status-mismatch" || err.code === "offline" || err.code === "no-db")) return; // الرسالة اتعرضت
+        alert("تعذر نقل اليوم: " + ((err && (err.message || err.code)) || err));
+        return;
+      }
+      state.today = newDate;
+      saveCurrentDayKey(newDate);
+      state.dayData = ingestDayData(movedDoc); // ✦ E32
+      state.dayReady = true;
+      switchDayListener();
+      state.eoSelectedDate = null;
+      state.sheet = null;
+      render();
+    }).catch(() => {});
     return;
   }
 
-  state.dayData = { ...state.dayData, opening };
-  persistDay(state.today, state.dayData);
-  state.sheet = null;
-  render();
+  const baseRev = (typeof state.dayData.rev === "number") ? state.dayData.rev : undefined; // ✦ NEW: فحص النسخة
+  await runWithDayLock(state.today, "تعديل الأرصدة الافتتاحية", async () => {
+    let savedDoc = null;
+    try {
+      // ✦ FIX: التعديل بيتطبق فوق أحدث نسخة من السيرفر — المعاملات وأي أرصدة قديمة (IDs مش ظاهرة) بتفضل زي ما هي
+      savedDoc = await persistDayDoc(state.today, { expectedStatus: state.dayData.status, baseRev }, (cur) => {
+        if (!cur) throw Object.assign(new Error("day-missing"), { code: "day-missing" });
+        const so = cur.opening || {};
+        const lo = state.dayData.opening || {};
+        return { ...cur, opening: {
+          drawer: opening.drawer, machineDrawer: opening.machineDrawer, islamBalance: opening.islamBalance, instapay: 0,
+          instapayAccounts: threeWayMergeMaps(lo.instapayAccounts, so.instapayAccounts, opening.instapayAccounts),
+          machines: threeWayMergeMaps(lo.machines, so.machines, opening.machines),
+          wallets: threeWayMergeMaps(lo.wallets, so.wallets, opening.wallets),
+          machineDebts: threeWayMergeMaps(lo.machineDebts, so.machineDebts, opening.machineDebts),
+          machineDebtSubs: threeWayMergeMaps(lo.machineDebtSubs, so.machineDebtSubs, opening.machineDebtSubs),
+        }};
+      });
+    } catch (err) {
+      if (err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "day-missing" || err.code === "offline" || err.code === "no-db")) return;
+      alert("حصل خطأ أثناء حفظ الأرصدة الافتتاحية: " + ((err && (err.message || err.code)) || err));
+      return;
+    }
+    state.dayData = ingestDayData(savedDoc); // ✦ E32
+    state.sheet = null;
+    render();
+  }).catch(() => {});
 }
 
 /* ===============================================================
@@ -2993,7 +4524,7 @@ function openTxSheet(txId) {
     time: initial?.time || null,
     category: initial?.category || "vodafone",
     subtype: initial?.subtype || "سحب",
-    walletId: initial?.walletId || "w1",
+    walletId: initial?.walletId || null,
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
     machineSub: initial?.machineSub || null,
     debtMachineId: initial?.machineId || (state.machines[0]?.id || ""), // ✦ NEW: للمديونية وسدادها
@@ -3664,19 +5195,21 @@ function vodafoneDepositContribution(t) {
   }
   return null;
 }
-function applyLimitDelta(oldTx, newTx) {
+async function applyLimitDelta(oldTx, newTx) {
   const oldC = vodafoneDepositContribution(oldTx);
   const newC = vodafoneDepositContribution(newTx);
   if (!oldC && !newC) return;
+  const base = { ...state.walletLimits };
   const limits = { ...state.walletLimits };
   if (oldC) limits[oldC.walletId] = num(limits[oldC.walletId]) - oldC.amount;
   if (newC) limits[newC.walletId] = num(limits[newC.walletId]) + newC.amount;
-  state.walletLimits = limits;
-  saveWalletLimits(limits);
+  const ok = await saveWalletLimits(limits, base); // ✦ FIX: مقارنة النسخة قبل الكتابة — ممنوع نكتب فوق تحديث جهاز تاني
+  if (ok) state.walletLimits = limits; // ✅ الواجهة تتحدث بس بعد نجاح الحفظ فعليًا
 }
 
-function validateMachineBalances(newTxs) {
-  const live = computeLive({ ...state.dayData, transactions: newTxs });
+function validateMachineBalances(newTxs, baseDayData) {
+  // ✦ baseDayData = نسخة السيرفر الأحدث (لو اتبعتت) — التحقق بيتم عليها مش على نسخة الجهاز
+  const live = computeLive({ ...(baseDayData || state.dayData), transactions: newTxs });
   for (const m of state.machines) {
     const subs = machineSubs(m);
     if (subs) {
@@ -3693,8 +5226,17 @@ function validateMachineBalances(newTxs) {
   return true;
 }
 
-function submitTx() {
+async function submitTx() {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
+  // ✦ NEW (E29): يوم مقفول = مفيش كتابة معاملات عليه (إلا في وضع تعديل الأرشيف)
+  if (state.dayData.status === "closed" && !state.editingArchiveDay) {
+    const __closedMsg = "حالة اليوم مقفول — مينفعش تسجيل أو تعديل أو حذف معاملات على يوم مقفول. لو محتاج تعدّل، اضغط \"إعادة فتح اليوم\" الأول.";
+    alert(__closedMsg);
+    reportSaveError("حالة اليوم مقفول — العملية اترفضت. افتح اليوم تاني (إعادة فتح) لو محتاج تعدّل.");
+    return;
+  }
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
@@ -3703,6 +5245,8 @@ function submitTx() {
   if (f.category !== "fawrySettlement" && !isFawryDebt && !(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
   if (isFawryDebt && !(num(f.debtMadfoat) > 0 || num(f.debtKhadamat) > 0)) { alert("اكتب مبلغ في خانة المدفوعات أو خدمات موبايل على الأقل."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
+  if (f.category === "vodafone" && !f.walletId) { alert("برجاء اختيار المحفظة — لا يمكن إتمام المعاملة بدون تحديد المحفظة."); return; }
+  if (f.category === "instapay" && !f.instapayAccountId) { alert("برجاء اختيار حساب انستاباي — لا يمكن إتمام المعاملة بدون تحديده."); return; }
   const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
   const selSubs = selMachine ? machineSubs(selMachine) : null;
   if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
@@ -3745,6 +5289,7 @@ function submitTx() {
   }
 
   const oldTx = f.id ? state.dayData.transactions.find(t => t.id === f.id) : null;
+  const baseTxSnapshot = oldTx ? JSON.parse(JSON.stringify(oldTx)) : null; // ✦ NEW: نسخة للمقارنة وقت الحفظ (كشف تعديل جهاز تاني)
   const currentUsername = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "";
 
   const tx = {
@@ -3774,18 +5319,52 @@ function submitTx() {
   };
   Object.keys(tx).forEach(k => { if (tx[k] === undefined) delete tx[k]; });
 
-  let txs;
-  if (tx.id) txs = state.dayData.transactions.map(t => t.id === tx.id ? { ...tx } : t);
-  else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: timeNow() }];
-
-  if (tx.category === "machine" && !validateMachineBalances(txs)) {
-    alert("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح.");
-    return;
+  /* ✦ FIX (مهم): الحفظ بيتطبق على أحدث نسخة من السيرفر نفسها (rebase) جوه transaction —
+     فلو جهاز تاني سجّل معاملة بعد ما فتحت الصفحة، معاملته مش هتضيع أبدًا.
+     وفيه فحص تاني للأرصدة على نسخة السيرفر قبل الاعتماد. */
+  let savedDoc = null;
+  try {
+    savedDoc = await mutateDayTransactions(state.today, state.dayData.status, (serverTxs, cur) => {
+      let newTxs;
+      if (tx.id) {
+        const idx = serverTxs.findIndex(t => t.id === tx.id);
+        if (idx < 0) { const e = new Error("tx-target-changed"); e.code = "tx-target-changed"; throw e; }
+        if (baseTxSnapshot && JSON.stringify(serverTxs[idx]) !== JSON.stringify(baseTxSnapshot)) {
+          const e = new Error("tx-target-changed"); e.code = "tx-target-changed"; throw e;
+        }
+        newTxs = serverTxs.map(t => t.id === tx.id ? { ...tx } : t);
+      } else {
+        newTxs = [...serverTxs, { ...tx, id: genId(), time: formatTimeCairo(serverNowMs()), timeMs: serverNowMs() }];
+      }
+      // ✦ إعادة التحقق من الأرصدة على أحدث نسخة من السيرفر (مش نسخة الجهاز)
+      if (tx.category === "machine" && !validateMachineBalances(newTxs, cur)) {
+        const e = new Error("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح (اتحققنا من أحدث أرصدة على السيرفر)."); e.code = "tx-invalid"; throw e;
+      }
+      if (tx.category === "machineDebtPayment") {
+        const liveSrv = computeLive({ ...cur, transactions: newTxs });
+        if (num(liveSrv.machineDebts?.[f.debtMachineId]) < -0.005) {
+          const e = new Error("المبلغ المدفوع أكبر من المديونية الحالية (المديونية اتحدّثت من جهاز تاني — راجع وكرر)."); e.code = "tx-invalid"; throw e;
+        }
+      }
+      if (tx.category === "fawrySettlement" && (num(tx.fawryDebtReduction) > 0 || num(tx.fawryDebtReductionKhadamat) > 0)) {
+        const liveSrv = computeLive(cur);
+        if (num(tx.fawryDebtReduction) > Math.max(num(liveSrv.machineDebts?.[f.debtMachineId]), 0) + 0.005) {
+          const e = new Error("مسدد المديونية أكبر من المديونية الحالية (اتحدّثت من جهاز تاني — راجع وكرر)."); e.code = "tx-invalid"; throw e;
+        }
+        if (num(tx.fawryDebtReductionKhadamat) > Math.max(num(liveSrv.machineDebtSubs?.[f.debtMachineId]?.["خدمات موبايل"] ?? 0), 0) + 0.005) {
+          const e = new Error("مسدد مديونية خدمات موبايل أكبر من المديونية الحالية (اتحدّثت من جهاز تاني — راجع وكرر)."); e.code = "tx-invalid"; throw e;
+        }
+      }
+      return newTxs;
+    });
+  } catch (err) {
+    console.error("submitTx save failed", err);
+    const handled = err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "tx-target-changed" || err.code === "tx-invalid" || err.code === "day-missing" || err.code === "offline" || err.code === "no-db");
+    if (!handled) alert("حصل خطأ أثناء حفظ المعاملة: " + ((err && (err.message || err.code)) || err));
+    return; // ✦ فشل الحفظ = المعاملة متسجلتش — مفيش نجاح كاذب
   }
-  state.dayData = { ...state.dayData, transactions: txs };
-  try { persistDay(state.today, state.dayData); }
-  catch (err) { console.error("submitTx save failed", err); alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err)); return; }
-  applyLimitDelta(oldTx, tx);
+  state.dayData = ingestDayData(savedDoc); // ✦ E32
+  await applyLimitDelta(oldTx, tx);
   state.sheet = null; state.txForm = null;
   render();
 }
@@ -3806,6 +5385,11 @@ function closeRowInputChanged(kind, id, sub) {
   else if (kind === "machineSub") { expected = machineBalValue(live.machines?.[id], sub); inputId = `cd-machine-${id}-${sub}`; diffId = `cd-diff-machine-${id}-${sub}`; }
   else if (kind === "islam") { expected = live.islamBalance; inputId = "cd-islam"; diffId = "cd-diff-islam"; }
   else if (kind === "machineDebt") { expected = num(live.machineDebts?.[id]); inputId = `cd-debt-${id}`; diffId = `cd-diff-debt-${id}`; }
+  /* ✦ NEW: صفوف جرد الأرصدة القديمة (IDs مش في الميتا الحالية) */
+  else if (kind === "machineOld") { expected = machineBalanceTotal(live.machines?.[id]); inputId = `cd-old-machine-${id}`; diffId = `cd-diff-old-machine-${id}`; }
+  else if (kind === "machineSubOld") { expected = machineBalValue(live.machines?.[id], sub); inputId = `cd-old-machine-${id}-${sub}`; diffId = `cd-diff-old-machine-${id}-${sub}`; }
+  else if (kind === "walletOld") { expected = num(live.wallets?.[id]); inputId = `cd-old-wallet-${id}`; diffId = `cd-diff-old-wallet-${id}`; }
+  else if (kind === "instapayOld") { expected = num(live.instapayAccounts?.[id] ?? 0); inputId = `cd-old-instapay-${id}`; diffId = `cd-diff-old-instapay-${id}`; }
   const el = document.getElementById(inputId);
   const diffEl = document.getElementById(diffId);
   if (!el || !diffEl) return;
@@ -3869,11 +5453,34 @@ function renderCloseSheetBody() {
       html += row(`مديونية ${m.name}`, num(live.machineDebts?.[m.id]), `cd-debt-${m.id}`, `cd-diff-debt-${m.id}`, `closeRowInputChanged('machineDebt','${m.id}')`);
     });
   }
+  { // ✦ NEW: صفوف جرد للأرصدة القديمة (IDs مش في الميتا الحالية) — تتعد فعليًا ومتتصفّرش
+    const orphans = collectOrphanBalances(state.dayData);
+    if (orphans.machines.length || orphans.wallets.length || orphans.instapayAccounts.length) {
+      html += `<div style="font-size:13px;font-weight:800;color:var(--gold);margin:14px 2px 8px;">أرصدة قديمة — تحتاج مراجعة (عدّها زي أي حاجة تانية)</div>`;
+      orphans.machines.forEach(x => {
+        if (x.live && typeof x.live === "object") {
+          Object.keys(x.live).forEach(s => {
+            html += row(`قديم · <span dir="ltr">${x.id}</span> - ${s}`, machineBalValue(x.live, s), `cd-old-machine-${x.id}-${s}`, `cd-diff-old-machine-${x.id}-${s}`, `closeRowInputChanged('machineSubOld','${x.id}','${s}')`);
+          });
+        } else {
+          html += row(`قديم · <span dir="ltr">${x.id}</span>`, machineBalanceTotal(x.live), `cd-old-machine-${x.id}`, `cd-diff-old-machine-${x.id}`, `closeRowInputChanged('machineOld','${x.id}')`);
+        }
+      });
+      orphans.wallets.forEach(x => {
+        html += row(`محفظة قديمة · <span dir="ltr">${x.id}</span>`, num(x.live), `cd-old-wallet-${x.id}`, `cd-diff-old-wallet-${x.id}`, `closeRowInputChanged('walletOld','${x.id}')`);
+      });
+      orphans.instapayAccounts.forEach(x => {
+        html += row(`انستاباي قديم · <span dir="ltr">${x.id}</span>`, num(x.live), `cd-old-instapay-${x.id}`, `cd-diff-old-instapay-${x.id}`, `closeRowInputChanged('instapayOld','${x.id}')`);
+      });
+    }
+  }
   return html;
 }
 
-function submitCloseDay() {
+async function submitCloseDay() {
   if (!requireEdit()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
+  if (!state.dayReady) { alert("لسه بيانات اليوم بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; }
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const instapayAccountsData = {};
   ipAccounts.forEach(acc => {
@@ -3902,28 +5509,81 @@ function submitCloseDay() {
       return [m.id, el ? num(el.value) : 0];
     })),
   };
-  state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow(), closedBy: state.userProfile?.username || "" };
-  persistDay(state.today, state.dayData);
-  state.sheet = null;
-  // ✦ NEW: بعد الإغلاق، انتقل تلقائيًا ليوم الشغل التالي (تاريخ النهاردة الفعلي) عشان تقدر تبدأ يوم جديد على طول
-  if (!state.editingArchiveDay) {
-    const closedKey = state.today;
-    const freshKey = dateKey(new Date());
-    const nextKey = freshKey !== closedKey ? freshKey : closedKey; // لو لسه نفس اليوم التقويمي، سيبه زي ما هو
-    if (nextKey !== closedKey) {
-      state.today = nextKey;
-      saveCurrentDayKey(nextKey);
-      state.dayReady = false;
-      switchDayListener();
-    }
+  { // ✦ FIX: نفس فكرة الدمج للإغلاق
+    const oldC = state.dayData.closing || {};
+    closing.machines = { ...(oldC.machines || {}), ...closing.machines };
+    closing.wallets = { ...(oldC.wallets || {}), ...closing.wallets };
+    closing.instapayAccounts = { ...(oldC.instapayAccounts || {}), ...closing.instapayAccounts };
+    closing.machineDebts = { ...(oldC.machineDebts || {}), ...closing.machineDebts };
   }
-  render();
+  { // ✦ NEW: جرد الأرصدة القديمة — الحقل اللي سايبه فاضي بياخد الرصيد المحسوب نفسه (مش صفر)
+    const orphans = collectOrphanBalances(state.dayData);
+    const oldMachines = {}, oldWallets = {}, oldInstapay = {};
+    orphans.machines.forEach(x => {
+      if (x.live && typeof x.live === "object") {
+        const obj = {};
+        Object.keys(x.live).forEach(s => { obj[s] = readOldBalanceInput(`cd-old-machine-${x.id}-${s}`, num(x.live[s])); });
+        oldMachines[x.id] = obj;
+      } else {
+        oldMachines[x.id] = readOldBalanceInput(`cd-old-machine-${x.id}`, machineBalanceTotal(x.live));
+      }
+    });
+    orphans.wallets.forEach(x => { oldWallets[x.id] = readOldBalanceInput(`cd-old-wallet-${x.id}`, num(x.live)); });
+    orphans.instapayAccounts.forEach(x => { oldInstapay[x.id] = readOldBalanceInput(`cd-old-instapay-${x.id}`, num(x.live)); });
+    closing.machines = { ...oldMachines, ...closing.machines };
+    closing.wallets = { ...oldWallets, ...closing.wallets };
+    closing.instapayAccounts = { ...oldInstapay, ...closing.instapayAccounts };
+  }
+  const expectedStatus = state.dayData.status;
+  const baseRev = (typeof state.dayData.rev === "number") ? state.dayData.rev : undefined; // ✦ NEW: فحص النسخة
+  await runWithDayLock(state.today, "إغلاق اليوم", async () => {
+    let savedDoc = null;
+    try {
+      // ✦ FIX: الإغلاق بيتسجل فوق أحدث نسخة من السيرفر — أي معاملة من جهاز تاني بتفضل، وأي رصيد قديم بيفضل
+      savedDoc = await persistDayDoc(state.today, { expectedStatus, baseRev }, (cur) => {
+        if (!cur) throw Object.assign(new Error("day-missing"), { code: "day-missing" });
+        const sc = cur.closing || {};
+        return {
+          ...cur,
+          status: "closed",
+          closing: {
+            ...closing,
+            machines: threeWayMergeMaps(null, sc.machines, closing.machines),
+            wallets: threeWayMergeMaps(null, sc.wallets, closing.wallets),
+            instapayAccounts: threeWayMergeMaps(null, sc.instapayAccounts, closing.instapayAccounts),
+            machineDebts: threeWayMergeMaps(null, sc.machineDebts, closing.machineDebts),
+          },
+          closedAt: timeNow(),
+          closedBy: state.userProfile?.username || "",
+        };
+      });
+    } catch (err) {
+      if (err && (err.code === "day-status-changed" || err.code === "day-rev-conflict" || err.code === "day-missing" || err.code === "offline" || err.code === "no-db")) return;
+      alert("حصل خطأ أثناء إغلاق اليوم: " + ((err && (err.message || err.code)) || err));
+      return;
+    }
+    state.dayData = ingestDayData(savedDoc); // ✦ E32
+    state.sheet = null;
+    // ✦ NEW: بعد الإغلاق، انتقل تلقائيًا ليوم الشغل التالي (تاريخ النهاردة الفعلي) عشان تقدر تبدأ يوم جديد على طول
+    if (!state.editingArchiveDay) {
+      const closedKey = state.today;
+      const freshKey = dateKey(new Date());
+      const nextKey = freshKey !== closedKey ? freshKey : closedKey; // لو لسه نفس اليوم التقويمي، سيبه زي ما هو
+      if (nextKey !== closedKey) {
+        state.today = nextKey;
+        saveCurrentDayKey(nextKey);
+        state.dayReady = false;
+        switchDayListener();
+      }
+    }
+    render();
+  }).catch(() => {});
 }
 
 /* ===============================================================
    Add Machine Sheet
    =============================================================== */
-function openAddMachineSheet() { if (!requireEdit()) return; state.sheet = "addMachine"; render(); }
+function openAddMachineSheet() { if (!requireAdmin()) return; state.sheet = "addMachine"; render(); }
 function renderAddMachineSheetBody() {
   return `<div class="field"><div class="field-label">اسم المكينة</div><input type="text" class="input" placeholder="مثال: فوري" id="am-name" autofocus oninput="updateAddMachineBtn()"></div>`;
 }
@@ -3932,20 +5592,24 @@ function updateAddMachineBtn() {
   const btn = document.getElementById("am-submit-btn");
   if (btn) btn.disabled = !val;
 }
-function submitAddMachine() {
-  if (!requireEdit()) return;
+async function submitAddMachine() {
+  if (!requireAdmin()) return;
   const name = (document.getElementById("am-name")?.value || "").trim();
   if (!name) return;
-  state.machines = [...state.machines, { id: genId(), name }];
-  saveMachines(state.machines);
-  state.sheet = null; render();
+  const base = Array.isArray(state.machines) ? state.machines.slice() : [];
+  // ✦ E33: لو المكينة دي كانت موجودة قبل كده بنفس الاسم (من الكاش) بنرجّع نفس الـ ID — فالأرصدة القديمة بترجع تظهر تحته فورًا
+  const reusedId = findCachedMachineIdNotActive(name, base);
+  const next = [...base, { id: reusedId || genId(), name }];
+  const ok = await saveMachines(next, base); // ✅ مفيش تحديث للواجهة غير بعد نجاح الحفظ فعليًا على السيرفر
+  if (ok) { state.machines = next; state.sheet = null; }
+  render();
 }
 
 /* ===============================================================
    ✦ NEW: Add Instapay Account Sheet
    =============================================================== */
 function openAddInstapaySheet() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   state.sheet = "addInstapay";
   render();
 }
@@ -3957,35 +5621,41 @@ function updateAddInstapayBtn() {
   const btn = document.getElementById("ai-submit-btn");
   if (btn) btn.disabled = !val;
 }
-function submitAddInstapay() {
-  if (!requireEdit()) return;
+async function submitAddInstapay() {
+  if (!requireAdmin()) return;
   const name = (document.getElementById("ai-name")?.value || "").trim();
   if (!name) return;
-  state.instapayAccounts = [...(state.instapayAccounts || []), { id: genId(), name }];
-  saveInstapayAccounts(state.instapayAccounts);
-  state.sheet = null; render();
+  const base = (state.instapayAccounts || []).slice();
+  const next = [...base, { id: genId(), name }];
+  const ok = await saveInstapayAccounts(next, base);
+  if (ok) { state.instapayAccounts = next; state.sheet = null; }
+  render();
 }
-function confirmDeleteInstapay(id, name) {
-  if (!requireEdit()) return;
+async function confirmDeleteInstapay(id, name) {
+  if (!requireAdmin()) return;
   if ((state.instapayAccounts || []).length <= 1) { alert("لازم يفضل حساب انستاباي واحد على الأقل."); return; }
-  if (confirm(`حذف "${name}"؟`)) {
-    state.instapayAccounts = (state.instapayAccounts || []).filter(a => a.id !== id);
-    saveInstapayAccounts(state.instapayAccounts);
+  if (confirm(`حذف "${name}"؟\n\nملحوظة: أي أرصدة مسجّلة للحساب ده في الأيام السابقة مش هتتمسح — هتظهر في قسم "أرصدة قديمة تحتاج مراجعة".`)) {
+    const base = (state.instapayAccounts || []).slice();
+    const next = base.filter(a => a.id !== id);
+    const ok = await saveInstapayAccounts(next, base);
+    if (ok) state.instapayAccounts = next;
     render();
   }
 }
 function startEditInstapay(id) {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   state.editingInstapayId = id;
   render();
 }
-function saveInstapayName(id) {
-  if (!requireEdit()) { state.editingInstapayId = null; render(); return; }
+async function saveInstapayName(id) {
+  if (!requireAdmin()) { state.editingInstapayId = null; render(); return; }
   const el = document.getElementById("instapay-edit-input");
   const name = el ? el.value.trim() : "";
   if (name) {
-    state.instapayAccounts = (state.instapayAccounts || []).map(a => a.id === id ? { ...a, name } : a);
-    saveInstapayAccounts(state.instapayAccounts);
+    const base = (state.instapayAccounts || []).slice();
+    const next = base.map(a => a.id === id ? { ...a, name } : a);
+    const ok = await saveInstapayAccounts(next, base);
+    if (ok) state.instapayAccounts = next;
   }
   state.editingInstapayId = null;
   render();
@@ -3995,7 +5665,7 @@ function saveInstapayName(id) {
    ✦ NEW: Add Wallet Sheet
    =============================================================== */
 function openAddWalletSheet() {
-  if (!requireEdit()) return;
+  if (!requireAdmin()) return;
   state.sheet = "addWallet";
   render();
 }
@@ -4007,32 +5677,35 @@ function updateAddWalletBtn() {
   const btn = document.getElementById("aw-submit-btn");
   if (btn) btn.disabled = !val;
 }
-function submitAddWallet() {
-  if (!requireEdit()) return;
+async function submitAddWallet() {
+  if (!requireAdmin()) return;
   const name = (document.getElementById("aw-name")?.value || "").trim();
   if (!name) return;
-  const id = genId();
-  state.walletNames = { ...state.walletNames, [id]: name };
-  saveWalletNames(state.walletNames);
-  state.walletLimits = { ...state.walletLimits, [id]: 0 };
-  saveWalletLimits(state.walletLimits);
-  state.walletCommissions = { ...state.walletCommissions, [id]: 0 };
-  saveWalletCommissions(state.walletCommissions);
+  const id = findCachedWalletIdNotActive(name, state.walletNames) || genId(); // ✦ E33: نفس الاسم ⇒ نفس الـ ID القديم
+  const baseNames = { ...state.walletNames };
+  const ok1 = await saveWalletNames({ ...baseNames, [id]: name }, baseNames);
+  if (!ok1) { render(); return; } // ✅ مفيش إضافة وهمية لو الحفظ فشل
+  state.walletNames = { ...baseNames, [id]: name };
+  const baseLimits = { ...state.walletLimits };
+  if (await saveWalletLimits({ ...baseLimits, [id]: 0 }, baseLimits)) state.walletLimits = { ...baseLimits, [id]: 0 };
+  const baseComms = { ...state.walletCommissions };
+  if (await saveWalletCommissions({ ...baseComms, [id]: 0 }, baseComms)) state.walletCommissions = { ...baseComms, [id]: 0 };
   state.sheet = null; render();
 }
-function confirmDeleteWallet(id, name) {
-  if (!requireEdit()) return;
+async function confirmDeleteWallet(id, name) {
+  if (!requireAdmin()) return;
   if (getWalletIds().length <= 1) { alert("لازم تفضل محفظة واحدة على الأقل."); return; }
-  if (confirm(`حذف "${name}"؟`)) {
-    const { [id]: _removedName, ...restNames } = state.walletNames;
+  if (confirm(`حذف "${name}"؟\n\nملحوظة مهمة: أي أرصدة مسجّلة للمحفظة دي في الأيام السابقة مش هتتمسح — هتظهر في قسم "أرصدة قديمة تحتاج مراجعة" وهتفضل محفوظة زي ما هي.`)) {
+    const baseNames = { ...state.walletNames };
+    const { [id]: _removedName, ...restNames } = baseNames;
+    if (!(await saveWalletNames(restNames, baseNames))) { render(); return; }
     state.walletNames = restNames;
-    saveWalletNames(state.walletNames);
-    const { [id]: _removedLimit, ...restLimits } = state.walletLimits;
-    state.walletLimits = restLimits;
-    saveWalletLimits(state.walletLimits);
-    const { [id]: _removedComm, ...restComm } = state.walletCommissions;
-    state.walletCommissions = restComm;
-    saveWalletCommissions(state.walletCommissions);
+    const baseLimits = { ...state.walletLimits };
+    const { [id]: _removedLimit, ...restLimits } = baseLimits;
+    if (await saveWalletLimits(restLimits, baseLimits)) state.walletLimits = restLimits;
+    const baseComms = { ...state.walletCommissions };
+    const { [id]: _removedComm, ...restComm } = baseComms;
+    if (await saveWalletCommissions(restComm, baseComms)) state.walletCommissions = restComm;
     render();
   }
 }
@@ -4040,13 +5713,13 @@ function confirmDeleteWallet(id, name) {
 /* ===============================================================
    Sheet dispatcher
    =============================================================== */
-function closeSheet() { state.sheet = null; state.txForm = null; state.eoSelectedDate = null; state.archiveDateEdit = null; render(); }
+function closeSheet() { state.sheet = null; state.txForm = null; state.eoSelectedDate = null; state.archiveDateEdit = null; state.startSheetPrefill = null; render(); }
 
 function renderSheet() {
   let title, body, footer;
   if (state.sheet === "start") {
     title = "الأرصدة الافتتاحية"; body = renderStartSheet();
-    footer = `<button class="primary-btn" onclick="submitStartDay()">بدء اليوم</button>`;
+    footer = `<button class="primary-btn" id="sd-submit-btn" onclick="submitStartDay()" ${state.startSheetPrefill && state.startSheetPrefill.loading ? "disabled" : ""}>بدء اليوم</button>`;
   } else if (state.sheet === "tx") {
     const editing = !!state.txForm.id;
     title = editing ? "تعديل المعاملة" : "معاملة جديدة"; body = renderTxSheetBody();
@@ -4126,19 +5799,30 @@ function renderArchiveView() {
 
 function openArchiveDay(d) {
   state.viewDate = d; state.archiveDayData = null; state.archiveDetailError = null; state.txFilter = { category: "all", q: "" }; render();
-  fetchArchiveDay(d).then(data => { state.archiveDayData = data || emptyDay(); render(); })
+  fetchArchiveDay(d).then(data => {
+    state.archiveDayRaw = data || emptyDay();                       // ✦ E32: الخام للتعديل الآمن
+    state.archiveDayData = ingestArchiveDayData(state.archiveDayRaw); // ✦ E32: الربط للعرض فقط
+    render();
+  })
     .catch(err => { state.archiveDetailError = `تعذر تحميل بيانات اليوم: ${err.code || ""} ${err.message || err}`; render(); });
 }
 
 /* ✦ NEW: الدخول في وضع تعديل يوم من الأرشيف — بيستخدم نفس شاشات المعاملات/الافتتاحية/الإغلاق العادية */
 function enterArchiveEditMode() {
   if (!isAdmin()) { alert("الأدمن بس اللي يقدر يعدّل في أيام الأرشيف."); return; }
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   if (!state.archiveDayData) return;
+  if (!state.dayReady) { alert("لسه بيانات يوم الشغل الحالي بتتحمّل من السيرفر — استنى ثانية وحاول تاني."); return; } // ✦ NEW: لازم نكون محمّلين اليوم الحالي عشان ناخد نسخة احتياطية منه وقت الخروج
+  // ✦ NEW: تحذير استباقي لو حد تاني ماسك قفل اليوم ده دلوقتي (القفل الفعلي بيتاخد مع كل عملية حفظ لاحقة تلقائيًا)
+  if (state.activeDayLock) {
+    alert(`في حد تاني (${state.activeDayLock.holderName}) بيعمل "${state.activeDayLock.action || 'عملية'}" دلوقتي. استنى لحد ما يخلص الأول.`);
+    return;
+  }
   if (!confirm(`هتدخل في وضع تعديل يوم ${displayDate(state.viewDate)}. أي تعديل هيتسجل فورًا على البيانات المحفوظة. متأكد؟`)) return;
   state.liveDayBackup = { key: state.today, data: state.dayData };
   state.editingArchiveDay = true;
   state.today = state.viewDate;
-  state.dayData = state.archiveDayData;
+  state.dayData = JSON.parse(JSON.stringify(state.archiveDayRaw || state.archiveDayData)); // ✦ E32: التعديل على النسخة الأصلية بالـ IDs الأصلية
   render();
 }
 
@@ -4146,7 +5830,8 @@ function enterArchiveEditMode() {
 function exitArchiveEditMode() {
   if (!state.editingArchiveDay) return;
   fetchArchiveDay(state.viewDate).then(data => {
-    state.archiveDayData = data || emptyDay();
+    state.archiveDayRaw = data || emptyDay();                          // ✦ E32
+    state.archiveDayData = ingestArchiveDayData(state.archiveDayRaw);  // ✦ E32
     if (state.liveDayBackup) {
       state.today = state.liveDayBackup.key;
       state.dayData = state.liveDayBackup.data;
@@ -4157,7 +5842,7 @@ function exitArchiveEditMode() {
     // ✦ خد آخر نسخة من اليوم الحالي الحقيقي من السيرفر (تحسبًا لأي تغيير حصل وقت التعديل)
     if (db) {
       db.collection("days").doc(state.today).get().then(snap => {
-        if (!state.editingArchiveDay) { state.dayData = snap.exists ? snap.data() : emptyDay(); render(); }
+        if (!state.editingArchiveDay) { state.dayData = ingestDayData(snap.exists ? snap.data() : emptyDay()); render(); discoverIdMappings(state.rawDayData); } // ✦ E32
       }).catch(err => console.error("refresh live day after archive edit failed", err));
     }
   }).catch(err => {
@@ -4237,8 +5922,9 @@ function renderArchiveDateEditSheetBody() {
 }
 
 /* ✦ NEW: تنفيذ تغيير تاريخ يوم أرشيف — بيتعامل مع حالتين: نقل لتاريخ أرشيف تاني، أو نقل لتاريخ النهاردة (وربما استبدال يوم مفتوح) */
-function submitArchiveDateEdit() {
+async function submitArchiveDateEdit() {
   if (!isAdmin()) return;
+  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   const ed = state.archiveDateEdit;
   if (!ed) return;
   const oldKey = state.viewDate;
@@ -4247,24 +5933,35 @@ function submitArchiveDateEdit() {
   if (!dayPayload) return;
   if (newKey === oldKey) { state.sheet = null; state.archiveDateEdit = null; render(); return; }
   const realToday = dateKey(new Date());
+  const oldRev = (typeof dayPayload.rev === "number") ? dayPayload.rev : undefined; // ✦ NEW: فحص نسخة اليوم المنقول
 
   if (newKey === realToday) {
     // ✦ الحالة الخاصة: المستخدم عايز يوم الأرشيف ده يبقى هو "النهاردة" ويتنقل للصفحة الرئيسية
-    db.collection("days").doc(realToday).get().then(snap => {
-      const currentTodayData = snap.exists ? snap.data() : emptyDay();
+    await runWithDayLock(realToday, "نقل يوم أرشيف لليوم الحالي", async () => {
+      let currentTodayData;
+      try {
+        const snap = await db.collection("days").doc(realToday).get();
+        currentTodayData = snap.exists ? snap.data() : emptyDay();
+      } catch (err) { alert("تعذر التحقق من يوم النهاردة: " + ((err && (err.message || err)) || err)); return; }
       const hasRealData = currentTodayData.status !== "not_started";
       const msg = hasRealData
-        ? `فيه يوم شغل مفتوح بالفعل بتاريخ النهاردة (${displayDate(realToday)}) وفيه بيانات مسجّلة. هيتم حذفه نهائيًا واستبداله ببيانات يوم ${displayDate(oldKey)}. متأكد؟`
+        ? `فيه يوم شغل بالفعل بتاريخ النهاردة (${displayDate(realToday)}) وفيه بيانات مسجّلة. هيتم أخذ نسخة احتياطية كاملة منه في days_backup ثم استبداله ببيانات يوم ${displayDate(oldKey)}. متأكد؟`
         : `هيتم نقل يوم ${displayDate(oldKey)} ليبقى هو يوم الشغل الحالي بتاريخ النهاردة (${displayDate(realToday)}). متأكد؟`;
       if (!confirm(msg)) return;
 
-      const movedData = { ...dayPayload };
-      persistDay(realToday, movedData);
-      db.collection("days").doc(oldKey).delete().catch(err => console.warn("cleanup old archive day failed", err));
+      let movedDoc = null;
+      try {
+        // ✦ FIX: النقل كله في معاملة واحدة ذرّية: نسخة احتياطية للطرفين + كتابة الجديد + حذف القديم (كله أو مفيش)
+        movedDoc = await moveDayDocument(oldKey, realToday, { oldRev, expectedNewStatus: currentTodayData.status });
+      } catch (err) {
+        const handled = err && (err.code === "move-old-missing" || err.code === "day-rev-conflict" || err.code === "move-status-mismatch" || err.code === "move-target-not-empty" || err.code === "offline" || err.code === "no-db");
+        if (!handled) alert("تعذر نقل اليوم: " + ((err && (err.message || err.code)) || err));
+        return;
+      }
       saveCurrentDayKey(realToday);
       state.today = realToday;
-      state.dayData = movedData;
-      state.dayReady = false;
+      state.dayData = ingestDayData(movedDoc); // ✦ E32
+      state.dayReady = true;
       switchDayListener();
       state.sheet = null;
       state.archiveDateEdit = null;
@@ -4272,25 +5969,34 @@ function submitArchiveDateEdit() {
       state.archiveDayData = null;
       state.tab = "today"; // ✦ نقل فعلي من الأرشيف للصفحة الرئيسية
       render();
-    }).catch(err => alert("تعذر التحقق من يوم النهاردة: " + (err.message || err)));
+    }).catch(() => {});
     return;
   }
 
   // ✦ نقل عادي بين تاريخين في الأرشيف (مش النهاردة)
-  db.collection("days").doc(newKey).get().then(snap => {
-    const existing = snap.exists ? snap.data() : null;
+  await runWithDayLock(newKey, "نقل يوم أرشيف", async () => {
+    let existing;
+    try {
+      const snap = await db.collection("days").doc(newKey).get();
+      existing = snap.exists ? snap.data() : null;
+    } catch (err) { alert("تعذر نقل اليوم: " + ((err && (err.message || err)) || err)); return; }
     if (existing && existing.status !== "not_started") {
       alert(`يوم ${displayDate(newKey)} فيه بيانات مسجّلة بالفعل، اختار تاريخ تاني.`);
       return;
     }
-    if (!confirm(`هيتم نقل بيانات يوم ${displayDate(oldKey)} لتاريخ ${displayDate(newKey)}. متأكد؟`)) return;
-    persistDay(newKey, dayPayload);
-    db.collection("days").doc(oldKey).delete().catch(err => console.warn("cleanup old archive day failed", err));
+    if (!confirm(`هيتم نقل بيانات يوم ${displayDate(oldKey)} لتاريخ ${displayDate(newKey)} (مع نسخة احتياطية أوّلًا). متأكد؟`)) return;
+    try {
+      await moveDayDocument(oldKey, newKey, { oldRev, expectedNewStatus: existing ? existing.status : "not_started" });
+    } catch (err) {
+      const handled = err && (err.code === "move-old-missing" || err.code === "day-rev-conflict" || err.code === "move-status-mismatch" || err.code === "move-target-not-empty" || err.code === "offline" || err.code === "no-db");
+      if (!handled) alert("تعذر نقل اليوم: " + ((err && (err.message || err.code)) || err));
+      return;
+    }
     state.sheet = null;
     state.archiveDateEdit = null;
     // ✦ افتح نفس اليوم لكن بمفتاحه الجديد
     openArchiveDay(newKey);
-  }).catch(err => alert("تعذر نقل اليوم: " + (err.message || err)));
+  }).catch(() => {});
 }
 
 function renderArchiveDetail() {
@@ -4341,7 +6047,7 @@ function renderArchiveDetail() {
         ${icon("archive",{size:14})} تعديل تاريخ اليوم
       </button>
     ` : ""}
-    ${renderBalancesGrid(live)}
+    ${renderBalancesGrid(live, d)}
     <div class="tx-list-header">
       <div class="section-title" style="margin:0;">المعاملات</div>
       <div class="tx-list-count" id="tx-list-count">${filterActive ? `${filteredTxs.length} من ${d.transactions.length}` : `${d.transactions.length} معاملة`}</div>
@@ -4504,9 +6210,39 @@ function renderServicesView() {
       `).join("")}
     </div>
 
+    ${isAdmin() ? renderIdMappingsSection() : ""}
     ${isAdmin() ? renderUsersSection() : ""}
   `;
   return html;
+}
+
+/* ✦ NEW (E34): قسم مراجعة الربط التصحيحي — كل ربط بالدليل اللي عمله + زر إلغاء */
+function renderIdMappingsSection() {
+  const entries = Object.keys(state.idMappings || {});
+  if (!entries.length) return "";
+  const kindLabel = { machine: "مكينة", wallet: "محفظة", instapay: "انستاباي" };
+  const rows = entries.map(oldId => {
+    const mp = state.idMappings[oldId] || {};
+    const newName = mp.kind === "machine" ? ((state.machines || []).find(m => m.id === mp.newId) || {}).name
+      : mp.kind === "wallet" ? (state.walletNames || {})[mp.newId]
+      : ((state.instapayAccounts || []).find(a => a.id === mp.newId) || {}).name;
+    return `
+      <div class="services-row" style="align-items:flex-start; flex-wrap:wrap; row-gap:6px;">
+        ${icon("landmark",{size:16,color:"var(--emerald)"})}
+        <div style="flex:1; min-width:150px;">
+          <div class="services-row-name">${esc(kindLabel[mp.kind] || "معرّف")} — ${esc(newName || mp.newId || "")}</div>
+          <div style="font-size:11px; color:var(--ink-60); margin-top:2px; direction:ltr; text-align:right;">${esc(oldId)} ← ${esc(mp.newId || "")}</div>
+          <div style="font-size:11px; color:var(--ink-40); margin-top:2px;">${esc(mp.evidence || "")} · ${mp.source === "auto" ? "ربط تلقائي" : "تأكيد يدوي"}${mp.mappedAtMs ? " · " + new Date(mp.mappedAtMs).toLocaleString("ar-EG") : ""}</div>
+        </div>
+        <button class="chip-btn small" onclick="removeIdMapping('${esc(oldId)}')">إلغاء الربط</button>
+      </div>`;
+  }).join("");
+  return `
+    <div class="services-header-row">
+      <div class="archive-title" style="margin-bottom:0;">الربط التصحيحي للمعرّفات القديمة (${entries.length})</div>
+    </div>
+    <div class="services-list" style="margin-bottom:20px;">${rows}</div>
+  `;
 }
 
 function renderUsersSection() {
@@ -4539,26 +6275,39 @@ function renderUsersSection() {
 }
 
 /* ---- wallet name/limit/commission edit helpers ---- */
-function startEditWallet(id) { if (!requireEdit()) return; state.editingWalletId = id; render(); }
-function saveWalletName(id) {
-  if (!requireEdit()) { state.editingWalletId = null; render(); return; }
+function startEditWallet(id) { if (!requireAdmin()) return; state.editingWalletId = id; render(); }
+async function saveWalletName(id) {
+  if (!requireAdmin()) { state.editingWalletId = null; render(); return; }
   const el = document.getElementById("wallet-edit-input");
   const name = el ? el.value.trim() : "";
-  if (name) { state.walletNames = { ...state.walletNames, [id]: name }; saveWalletNames(state.walletNames); }
+  if (name) {
+    const base = { ...state.walletNames };
+    const next = { ...base, [id]: name };
+    const ok = await saveWalletNames(next, base);
+    if (ok) state.walletNames = next;
+  }
   state.editingWalletId = null; render();
 }
-function startEditWalletLimit(id) { if (!requireEdit()) return; state.editingWalletLimitId = id; render(); }
-function saveWalletLimitUsed(id) {
-  if (!requireEdit()) { state.editingWalletLimitId = null; render(); return; }
+function startEditWalletLimit(id) { if (!requireAdmin()) return; state.editingWalletLimitId = id; render(); }
+async function saveWalletLimitUsed(id) {
+  if (!requireAdmin()) { state.editingWalletLimitId = null; render(); return; }
   const el = document.getElementById("wl-limit-input-" + id);
   const used = el ? num(el.value) : num(state.walletLimits[id]);
-  state.walletLimits = { ...state.walletLimits, [id]: used };
-  saveWalletLimits(state.walletLimits);
+  const base = { ...state.walletLimits };
+  const next = { ...base, [id]: used };
+  const ok = await saveWalletLimits(next, base);
+  if (ok) state.walletLimits = next;
   state.editingWalletLimitId = null; render();
 }
-function confirmDeleteMachine(id, name) {
-  if (!requireEdit()) return;
-  if (confirm(`حذف "${name}"؟`)) { state.machines = state.machines.filter(m => m.id !== id); saveMachines(state.machines); render(); }
+async function confirmDeleteMachine(id, name) {
+  if (!requireAdmin()) return;
+  if (confirm(`حذف "${name}"؟\n\nملحوظة مهمة: أي أرصدة مسجّلة لهذه المكينة في الأيام السابقة مش هتتمسح — هتظهر في قسم "أرصدة قديمة تحتاج مراجعة" وهتفضل محفوظة زي ما هي.`)) {
+    const base = Array.isArray(state.machines) ? state.machines.slice() : [];
+    const next = base.filter(m => m.id !== id);
+    const ok = await saveMachines(next, base);
+    if (ok) state.machines = next;
+    render();
+  }
 }
 
 /* ===============================================================
@@ -4782,7 +6531,14 @@ setTimeout(checkForAppUpdate, 15000);
 /* ===============================================================
    Boot
    =============================================================== */
+/* ✦ NEW: محاولة أخيرة (best-effort) لتنظيف قفل اليوم لو التبويب اتقفل فجأة أثناء عملية —
+   مش مضمونة 100% (المتصفح ممكن يقطع الطلب) لكن DAY_LOCK_MAX_AGE_MS هو خط الدفاع الأخير المضمون */
+window.addEventListener("beforeunload", () => {
+  if (db && state.authUser) { try { releaseDayLock(); } catch (e) {} }
+});
+
 bootApp();
 </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","spa":2}' crossorigin="anonymous"></script>
 </body>
 </html>
