@@ -515,66 +515,7 @@
    عشان المستخدمين ياخدوا رسالة "فيه تحديث جديد". أي نص/رقم يفرق عن القيمة
    القديمة كفاية (مثلاً تاريخ اليوم + رقم تسلسلي).
    =============================================================== */
-const APP_VERSION = "2026-9-24-02";
-
-/* ===============================================================
-   ✦ NEW: فحص اتصال إنترنت إجباري — التطبيق ميشتغلش (ولا حتى يعرض واجهة تسجيل الدخول)
-   غير لو النت متأكد إنه شغال فعليًا. navigator.onLine وحده مش موثوق (بيرجع true أحيانًا
-   حتى لو مفيش نت فعلي)، فبنعمل طلب شبكة خفيف فعلي للتأكد.
-   =============================================================== */
-let __isOnline = navigator.onLine;
-let __connectivityCheckInFlight = false;
-
-/* طلب شبكة خفيف جدًا (بدون كاش) للتأكد إن الإنترنت شغال فعليًا مش بس إن الجهاز "متصل بشبكة" */
-async function verifyRealConnectivity() {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
-    // نستخدم رابط جوجل الخفيف المخصص لفحص الاتصال (بيرجع استجابة فورية وصغيرة جدًا)
-    await fetch("https://www.gstatic.com/generate_204", { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
-    clearTimeout(t);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-async function checkConnectivity() {
-  if (__connectivityCheckInFlight) return;
-  __connectivityCheckInFlight = true;
-  const wasOnline = __isOnline;
-  // الخطوة الأولى: لو المتصفح نفسه بيقول أوفلاين، صدّقه فورًا (ده مؤشر أكيد)
-  if (!navigator.onLine) {
-    __isOnline = false;
-  } else {
-    // الخطوة الثانية: تأكيد فعلي بطلب شبكة حقيقي
-    __isOnline = await verifyRealConnectivity();
-  }
-  __connectivityCheckInFlight = false;
-  if (__isOnline !== wasOnline) {
-    render();
-    // ✦ لو النت رجع بعد ما كان قاطع، أعد ربط كل الـ listeners والمزامنة من جديد عشان نضمن بيانات حديثة تمامًا
-    if (__isOnline && wasOnline === false) {
-      onConnectivityRestored();
-    }
-  }
-  // (اتشال الريندر الدوري هنا — كان بيمسح الحقول كل 5 ثواني)
-}
-
-/* لما النت يرجع بعد انقطاع، لازم نعيد تحميل كل حاجة من الصفر بدل ما نعتمد على listeners ممكن تكون اتقطعت بصمت */
-function onConnectivityRestored() {
-  if (!state.authUser) { render(); return; }
-  location.reload();
-}
-
-// فحص فوري عند بدء التطبيق
-checkConnectivity();
-// فحص دوري كل 5 ثواني (خفيف ومناسب لحاجة حرجة زي دي)
-setInterval(checkConnectivity, 5000);
-// فحص فوري عند أي تغيير في حالة الاتصال يبلّغ عنها المتصفح
-window.addEventListener("online", checkConnectivity);
-window.addEventListener("offline", () => { __isOnline = false; render(); });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkConnectivity(); });
+const APP_VERSION = "2026-8-28-01";
 
 /* ===============================================================
    Firebase Config
@@ -635,39 +576,10 @@ function saveWalletCommissions(commissions) {
   db.collection("meta").doc("walletCommissions").set(commissions)
     .catch(err => reportSaveError("فشل حفظ عمولات المحافظ: " + (err.message || err.code)));
 }
-/* ✦ UPDATED: بقت بتستخدم Firestore Transaction بدل .set() المباشر.
-   السبب: .set() العادي كان بيكتب فوق المستند بالكامل بغض النظر عن حالته الحالية على السيرفر —
-   فلو جهاز تاني قفل اليوم أو بدأ يوم جديد في نفس اللحظة، الجهاز ده كان بيمسح التعديل ده من غير ما يدري.
-   دلوقتي: لازم يكون النت متصل، ولازم expectedStatus (لو اتبعت) يطابق الحالة الفعلية على السيرفر
-   وقت الكتابة، وإلا بترفض الكتابة وتبلّغ المستخدم بدل ما تمسح بيانات حد تاني بصمت. */
-function persistDay(key, data, expectedStatus) {
-  if (!db) return Promise.reject(new Error("no-db"));
-  if (!__isOnline) {
-    const msg = "مفيش اتصال بالإنترنت. التعديل ده متسجلش.";
-    reportSaveError(msg);
-    return Promise.reject(new Error("offline"));
-  }
-  const ref = db.collection("days").doc(key);
-  return db.runTransaction(async (tx) => {
-    if (expectedStatus !== undefined) {
-      const snap = await tx.get(ref);
-      const curStatus = snap.exists ? (snap.data().status || "not_started") : "not_started";
-      if (curStatus !== expectedStatus) {
-        const err = new Error("day-status-changed");
-        err.code = "day-status-changed";
-        err.actualStatus = curStatus;
-        throw err;
-      }
-    }
-    tx.set(ref, data);
-  }).catch(err => {
-    if (err && err.code === "day-status-changed") {
-      reportSaveError("حالة اليوم اتغيرت من جهاز تاني قبل ما تحفظ التعديل ده. حدّث الصفحة وشوف آخر حالة قبل ما تكمل.");
-    } else {
-      reportSaveError("فشل حفظ بيانات اليوم! البيانات دي متسجلتش على السيرفر: " + (err.message || err.code));
-    }
-    throw err;
-  });
+function persistDay(key, data) {
+  if (!db) return;
+  db.collection("days").doc(key).set(data)
+    .catch(err => reportSaveError("فشل حفظ بيانات اليوم! البيانات دي متسجلتش على السيرفر: " + (err.message || err.code)));
 }
 /* ✦ NEW: يوم الشغل الحالي — عشان لو الساعة عدت ١٢ بليل، اليوم يفضل مفتوح لحد ما تقفله بنفسك */
 function saveCurrentDayKey(key) {
@@ -690,82 +602,6 @@ function fetchArchiveDay(key) {
   if (!db) return Promise.resolve(null);
   return db.collection("days").doc(key).get()
     .then(snap => snap.exists ? snap.data() : null);
-}
-
-/* ===============================================================
-   ✦ NEW: نظام قفل اليوم (Day Lock) — يمنع تعارض فتح/قفل/تعديل نفس يوم الشغل
-   من أكتر من جهاز في نفس اللحظة. كل عملية حساسة (بدء يوم، إغلاق يوم، إعادة فتح،
-   تغيير تاريخ) لازم تمر عبر runWithDayLock قبل ما تنفذ أي كتابة.
-   =============================================================== */
-const DAY_LOCK_MAX_AGE_MS = 20000; // لو قفل قديم عدّى 20 ثانية، نعتبره متروك (جهاز اتقفل فجأة مثلاً) ونسمح بتجاوزه
-
-function dayLockRef() { return db.collection("meta").doc("dayLock"); }
-
-/* بياخد القفل لعملية معينة على يوم معين، وبيرجّع true لو نجح ياخده، أو false ومعاه اسم مين ماسكه لو مشغول */
-async function acquireDayLock(dayKey, actionLabel) {
-  const ref = dayLockRef();
-  const holderName = state.userProfile?.username || (state.authUser?.email || "").split("@")[0] || "مستخدم";
-  try {
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      const cur = snap.exists ? snap.data() : null;
-      const now = Date.now();
-      const isStale = cur && cur.lockedAtMs && (now - cur.lockedAtMs) > DAY_LOCK_MAX_AGE_MS;
-      if (cur && cur.sessionId && cur.sessionId !== DEVICE_SESSION_ID && !isStale) {
-        // مقفول فعليًا من جهاز/جلسة تانية ولسه حديث — امنع
-        return { ok: false, holderName: cur.holderName || "مستخدم تاني", action: cur.action || "" };
-      }
-      tx.set(ref, {
-        sessionId: DEVICE_SESSION_ID,
-        holderName,
-        action: actionLabel,
-        dayKey,
-        lockedAtMs: now,
-      });
-      return { ok: true };
-    });
-    return result;
-  } catch (err) {
-    console.error("acquireDayLock failed", err);
-    // لو حصل خطأ في القفل نفسه (مشكلة شبكة لحظية) امنع العملية بدل ما نخاطر بتعارض
-    return { ok: false, holderName: null, action: null, error: err };
-  }
-}
-
-/* بيسيب القفل — لازم يتنادى دايمًا بعد ما العملية تخلص (نجاح أو فشل) */
-async function releaseDayLock() {
-  try {
-    const ref = dayLockRef();
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      const cur = snap.exists ? snap.data() : null;
-      if (cur && cur.sessionId === DEVICE_SESSION_ID) {
-        tx.delete(ref);
-      }
-    });
-  } catch (err) {
-    console.warn("releaseDayLock failed", err);
-  }
-}
-
-/* ✦ غلاف موحّد: بياخد القفل، ينفذ fn، وبعدين يسيب القفل — سواء نجح fn أو فشل.
-   لو القفل مشغول من حد تاني، بيوري رسالة واضحة ومبينفذش fn خالص. */
-async function runWithDayLock(dayKey, actionLabel, fn) {
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
-  const acquired = await acquireDayLock(dayKey, actionLabel);
-  if (!acquired.ok) {
-    if (acquired.error) {
-      alert("تعذر التأكد من عدم وجود تعارض. جرب تاني.");
-    } else {
-      alert(`في حد تاني (${acquired.holderName}) بيعمل "${acquired.action || "عملية"}" على نفس اليوم دلوقتي. استنى شوية وجرب تاني.`);
-    }
-    return;
-  }
-  try {
-    await fn();
-  } finally {
-    await releaseDayLock();
-  }
 }
 
 /* ✦ NEW: يجيب الأيام "الفاضية" المتاحة لاختيارها كتاريخ لليوم — أي يوم من آخر 30 يوم لحد النهاردة
@@ -801,69 +637,14 @@ function displayDate(key){
   const dt = new Date(y, m-1, d);
   return `${AR_DAYS[dt.getDay()]} ${d} ${AR_MONTHS[m-1]} ${y}`;
 }
-/* ===============================================================
-   ✦ NEW: توقيت موحّد (بتوقيت القاهرة) مبني على ساعة سيرفر Firebase
-   بدل ساعة جهاز المستخدم — عشان كل المعاملات من أي موبايل تتسجل
-   بنفس التوقيت الحقيقي حتى لو ساعة الجهاز غلط.
-   =============================================================== */
-let __serverTimeOffsetMs = 0; // الفرق بين وقت السيرفر ووقت الجهاز (بالميلي ثانية)
-let __serverTimeSynced = false;
-
-/* بيقيس الفرق بين ساعة السيرفر وساعة الجهاز عن طريق كتابة serverTimestamp في مستند صغير مخصص لده وقراءته فورًا */
-function syncServerTime() {
-  if (!db) return Promise.resolve();
-  const ref = db.collection("meta").doc("serverClock");
-  const beforeMs = Date.now();
-  return ref.set({ t: firebase.firestore.FieldValue.serverTimestamp() })
-    .then(() => ref.get({ source: "server" }))
-    .then(snap => {
-      const afterMs = Date.now();
-      const serverMs = snap.exists && snap.data().t ? snap.data().t.toMillis() : null;
-      if (serverMs) {
-        // نعوّض زمن الرحلة (round-trip) بمتوسط وقت الإرسال والاستلام
-        const roundTripMid = beforeMs + (afterMs - beforeMs) / 2;
-        __serverTimeOffsetMs = serverMs - roundTripMid;
-        __serverTimeSynced = true;
-      }
-    })
-    .catch(err => { console.warn("syncServerTime failed", err); });
-}
-
-/* الوقت الحالي الحقيقي (متزامن مع السيرفر) كـ epoch ms — ده اللي بيتسجل في كل معاملة */
-function serverNowMs() {
-  return Date.now() + __serverTimeOffsetMs;
-}
-
-/* نص عرض الوقت (ساعة:دقيقة ص/م) — دايمًا بتوقيت القاهرة بغض النظر عن توقيت الجهاز أو منطقته */
-function formatTimeCairo(ms) {
-  if (!ms) return "";
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit", hour12: false
-  }).formatToParts(new Date(ms));
-  const get = t => parts.find(p => p.type === t)?.value || "0";
-  let h = parseInt(get("hour"), 10);
-  const m = get("minute");
+function timeNow(){
+  const d = new Date();
+  let h = d.getHours(); const m = pad(d.getMinutes());
   const ampm = h >= 12 ? "م" : "ص";
   h = h % 12; if (h === 0) h = 12;
   return `${h}:${m} ${ampm}`;
 }
-/* وقت اليوم الحالي (نص) بتوقيت القاهرة، متزامن مع السيرفر */
-function timeNow(){
-  return formatTimeCairo(serverNowMs());
-}
-/* ✦ مفتاح اليوم (تاريخ) بتوقيت القاهرة، متزامن مع السيرفر — عشان اليوم مايتغيّرش بسبب توقيت الجهاز */
-function dateKeyNowCairo() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit"
-  }).formatToParts(new Date(serverNowMs()));
-  const get = t => parts.find(p => p.type === t)?.value;
-  return `${get("year")}-${get("month")}-${get("day")}`;
-}
 function genId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
-
-/* ✦ NEW: معرّف فريد لكل جهاز/تبويب مفتوح — بيتولد مرة واحدة وقت فتح التطبيق ويفضل ثابت طول الجلسة،
-   بيستخدم في نظام قفل اليوم عشان نعرف مين اللي ماسك القفل بالظبط */
-const DEVICE_SESSION_ID = genId() + genId();
 function num(v){ const n = parseFloat(v); return isNaN(n) ? 0 : n; }
 function money(n){
   const v = Number(n)||0;
@@ -1113,8 +894,6 @@ const state = {
   archiveDateEdit: null, // ✦ NEW: { availableDates, loading, selected } — حالة شيت تعديل تاريخ يوم أرشيف
   balanceBreakdownMachineId: null, // ✦ NEW: لعرض تفاصيل حساب رصيد فوري (تشخيص)
   theme: "light", // ✦ NEW: "light" أو "dark"
-  offlineRetrying: false, // ✦ NEW: حالة زرار "إعادة المحاولة" في شاشة عدم الاتصال
-  activeDayLock: null, // ✦ NEW: { holderName, action } لو حد تاني ماسك قفل اليوم دلوقتي
 };
 
 try {
@@ -1172,77 +951,42 @@ function attachRealtimeListeners() {
   attachWalletLimitsListener(0);
   attachInstapayAccountsListener(0);   // ✦ NEW
   attachWalletCommissionsListener(0);  // ✦ NEW
-  attachDayLockListener();             // ✦ NEW
   resolveWorkingDayAndAttach(0);
 }
 
-/* ✦ NEW: متابعة حالة قفل اليوم لحظيًا — عشان نقدر نعرض تنبيه استباقي لو حد تاني بيعدّل دلوقتي،
-   قبل ما المستخدم يضغط زرار ويتفاجئ بالرفض */
-function attachDayLockListener() {
-  const unsub = dayLockRef().onSnapshot(snap => {
-    const cur = snap.exists ? snap.data() : null;
-    if (cur && cur.sessionId && cur.sessionId !== DEVICE_SESSION_ID) {
-      const isStale = cur.lockedAtMs && (Date.now() - cur.lockedAtMs) > DAY_LOCK_MAX_AGE_MS;
-      state.activeDayLock = isStale ? null : { holderName: cur.holderName, action: cur.action };
-    } else {
-      state.activeDayLock = null;
-    }
-    render();
-  }, err => { console.warn("dayLock listener error", err); });
-  state.unsubscribers.push(unsub);
-}
-
-/* ✦ UPDATED: بقت realtime listener دائم على meta/currentDay بدل قراءة لمرة واحدة.
-   السبب الجوهري للمشكلة القديمة: لو جهاز A بيشتغل على يوم معين، وجهاز B غيّر يوم الشغل
-   (بدأ يوم جديد / تخطى يوم قديم)، جهاز A مكانش بيعرف بالتغيير ده أبدًا لحد ما يعمل reload يدوي —
-   فكان فاضل يكتب على يوم "قديم" من وجهة نظره فعليًا اتغير أو اتقفل من تحته على السيرفر.
-   دلوقتي أي تغيير في currentDay من أي جهاز بيوصل لحظيًا لكل الأجهزة التانية وبيبدّلوا الـ listener بتاعهم تلقائيًا. */
-let __currentDayUnsub = null;
-
+/* ✦ NEW: يحدد يوم الشغل الصح (ممكن يكون يوم سابق اتنسي ومفتحش، أو الساعة عدت ١٢ بليل) قبل ما يربط الـ listener */
 function resolveWorkingDayAndAttach(retryCount) {
-  const unsub = db.collection("meta").doc("currentDay").onSnapshot(snap => {
-    const key = snap.exists ? (snap.data().key || null) : null;
+  fetchCurrentDayKey().then(key => {
     const realToday = dateKey(new Date());
-
-    if (!key) {
-      // أول مرة يفتح فيها أي جهاز التطبيق — سجّل يوم النهاردة كيوم الشغل الحالي
-      if (!state.dayReady) saveCurrentDayKey(realToday);
-      if (state.today !== realToday || !state.dayReady) {
-        state.today = realToday;
-        switchDayListener();
+    if (key) {
+      state.today = key;
+      // ✦ NEW: لو يوم الشغل المحفوظ مش نفس تاريخ النهاردة الفعلي، وبيانات اليوم ده لسه "لم يبدأ"
+      //   (يعني اتفوّت تمامًا ومحدش فتح التطبيق فيه) — اسأل المستخدم قبل ما نفتحه له صامت
+      if (key !== realToday) {
+        db.collection("days").doc(key).get().then(snap => {
+          const d = snap.exists ? snap.data() : emptyDay();
+          if (d.status === "not_started") {
+            state.staleDayPrompt = { key, realToday };
+          }
+          state.dayData = d; // نعرض بيانات اليوم القديم لحد ما المستخدم يقرر
+          attachDayListener(0);
+          render();
+        }).catch(() => { attachDayListener(0); });
+        return;
       }
-      return;
-    }
-
-    if (key === state.today && state.dayReady) return; // مفيش تغيير فعلي
-
-    // ✦ يوم الشغل اتغيّر (سواء من الجهاز ده أو من جهاز تاني) — بدّل الـ listener على اليوم الجديد
-    state.today = key;
-    state.staleDayPrompt = null; // أي تنبيه قديم بقى غير ذي صلة لو اليوم اتغيّر فعلاً
-    if (key !== realToday) {
-      db.collection("days").doc(key).get().then(snap2 => {
-        const d = snap2.exists ? snap2.data() : emptyDay();
-        if (d.status === "not_started") {
-          state.staleDayPrompt = { key, realToday };
-        }
-        state.dayData = d;
-        state.dayReady = false;
-        switchDayListener();
-      }).catch(() => { switchDayListener(); });
     } else {
-      state.dayReady = false;
-      switchDayListener();
+      // أول مرة يفتح فيها التطبيق — سجّل يوم النهاردة كيوم الشغل الحالي
+      saveCurrentDayKey(state.today);
     }
-  }, err => {
-    console.error("currentDay listener error (retry " + retryCount + ")", err);
+    attachDayListener(0);
+  }).catch(err => {
+    console.error("resolveWorkingDayAndAttach failed (retry " + retryCount + ")", err);
     if (retryCount < LISTENER_RETRY_DELAYS.length) {
       scheduleRetry(retryCount, () => resolveWorkingDayAndAttach(retryCount + 1));
     } else {
       attachDayListener(0); // كملّ بيوم النهاردة كحل احتياطي بدل ما يعلّق التطبيق
     }
   });
-  __currentDayUnsub = unsub;
-  state.unsubscribers.push(unsub);
 }
 
 /* ✦ NEW: المستخدم اختار يفضل شغال على اليوم القديم اللي اتفوّت (مثلاً هيسجله بأثر رجعي) */
@@ -1252,19 +996,19 @@ function keepStaleDay() {
 }
 
 /* ✦ NEW: المستخدم اختار يتخطى اليوم القديم اللي اتفوّت ويبدأ يوم الشغل بتاريخ النهاردة الفعلي */
-async function skipToFreshDay() {
+function skipToFreshDay() {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   const prompt = state.staleDayPrompt;
   if (!prompt) return;
-  await runWithDayLock(prompt.key, "تخطي يوم قديم متفوّت", async () => {
-    state.staleDayPrompt = null;
-    saveCurrentDayKey(prompt.realToday);
-    // ملحوظة: state.today و switchDayListener هيتحدثوا تلقائيًا عن طريق realtime listener بتاع currentDay
-    state.txFilter = { category: "all", q: "" };
-    state.tab = "today";
-    render();
-  }).catch(() => {});
+  state.staleDayPrompt = null;
+  state.today = prompt.realToday;
+  saveCurrentDayKey(prompt.realToday);
+  state.dayReady = false;
+  state.dayData = emptyDay();
+  state.txFilter = { category: "all", q: "" };
+  switchDayListener();
+  state.tab = "today";
+  render();
 }
 
 function scheduleRetry(retryCount, fn) {
@@ -1405,29 +1149,6 @@ function showConnectionError() {
   render();
 }
 
-/* ✦ NEW: شاشة قفل كاملة لما مفيش نت — بتحجب كل التطبيق ومفيش أي طريقة تستخدمه من غيرها */
-function renderOfflineScreen() {
-  return `
-    <div style="min-height:100vh; min-height:100svh; min-height:100dvh; min-height:calc(var(--vh100, 1vh) * 100); display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);">
-      <div style="width:100%; max-width:340px; background:var(--surface); border-radius:20px; padding:30px 22px 24px; border:1px solid var(--ink-10); text-align:center;">
-        <div class="empty-state-icon" style="margin:0 auto 16px; background:#f3e0da;">${icon("alert-triangle",{size:26,color:"var(--rust)"})}</div>
-        <div class="empty-state-title" style="color:var(--rust);">مفيش اتصال بالإنترنت</div>
-        <div class="empty-state-desc">التطبيق محتاج اتصال دايم بالإنترنت عشان يمنع أي تعارض في البيانات بين الأجهزة. وصّل بالنت وجرب تاني.</div>
-        <button class="primary-btn" onclick="retryConnectivity()" ${state.offlineRetrying ? "disabled" : ""}>
-          ${state.offlineRetrying ? "جاري المحاولة..." : "إعادة المحاولة"}
-        </button>
-      </div>
-    </div>
-  `;
-}
-async function retryConnectivity() {
-  state.offlineRetrying = true;
-  render();
-  await checkConnectivity();
-  state.offlineRetrying = false;
-  if (!__isOnline) render();
-}
-
 /* ===============================================================
    Auth
    =============================================================== */
@@ -1443,25 +1164,15 @@ async function bootApp(retryCount) {
       firebase.initializeApp(FIREBASE_CONFIG);
       db = firebase.firestore();
       db.settings({ ignoreUndefinedProperties: true });
-      /* ✦ NEW: تعطيل الكاش الأوفلاين نهائيًا — التطبيق ده لازم يشتغل أونلاين بس عشان يمنع تعارضات
-         بين الأجهزة (لو جهاز شغال أوفلاين ممكن يكتب فوق تعديلات جهاز تاني لما يرجع النت). */
+      try { await db.enablePersistence({ synchronizeTabs: true }); } catch (e) { console.warn("offline persistence not enabled", e.code || e.message); }
       state.fbReady = true;
       firebase.auth().onAuthStateChanged(user => {
         state.authUser = user;
         state.authChecked = true;
         state.loginSubmitting = false;
-        if (user) {
-          attachRealtimeListeners();
-          loadUserProfile(user);
-          syncServerTime(); // ✦ NEW: زامن ساعة السيرفر أول ما يسجّل دخول
-        }
+        if (user) { attachRealtimeListeners(); loadUserProfile(user); }
         else { state.userProfile = null; state.userProfileReady = false; }
         render();
-      });
-      // ✦ NEW: أعد المزامنة كل 5 دقايق (ولما التاب يرجع نشط) عشان التوقيت يفضل دقيق طول الوقت
-      setInterval(() => { if (state.authUser) syncServerTime(); }, 5 * 60 * 1000);
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && state.authUser) syncServerTime();
       });
     }
     state.connectionError = null;
@@ -1537,11 +1248,6 @@ function isAdmin() { return !!state.userProfile && state.userProfile.role === "a
 function canEdit() { return !!state.userProfile && (state.userProfile.role === "admin" || state.userProfile.role === "editor"); }
 function requireEdit() {
   if (!canEdit()) { alert("حسابك في وضع (رؤية فقط) ومش هيقدر يعدّل أو يضيف بيانات."); return false; }
-  return true;
-}
-/* ✦ NEW: صفحة الإعدادات وكل ما فيها (مكن/محافظ/انستاباي/ليميت/مستخدمين) للأدمن بس */
-function requireAdmin() {
-  if (!isAdmin()) { alert("الأدمن بس اللي يقدر يوصل لصفحة الإعدادات."); return false; }
   return true;
 }
 function roleLabel(role) {
@@ -1653,7 +1359,6 @@ function deleteUser(id) {
 }
 function logout() {
   if (!confirm("تسجيل الخروج؟")) return;
-  releaseDayLock(); // ✦ NEW: سيب أي قفل ماسكه الجهاز ده قبل ما يخرج
   (state.unsubscribers || []).forEach(u => { try { u(); } catch(e) {} });
   state.unsubscribers = []; state.listenersAttached = false; state.ready = false;
   state.machinesReady = false; state.walletNamesReady = false; state.dayReady = false;
@@ -1756,69 +1461,8 @@ function tint15(color) {
 /* ===============================================================
    Render dispatch
    =============================================================== */
-/* ✦ حفظ/استرجاع حالة الواجهة (قيم الحقول + الفوكس + السكرول) حوالين أي render */
-let __lastRenderedSheet = null;
-
-function captureUiState() {
-  const snap = { sheet: __lastRenderedSheet, fields: {}, focusId: null, selStart: null, selEnd: null,
-                 winY: window.scrollY, sheetScroll: 0 };
-  const sb = document.getElementById("sheet-body");
-  if (sb) snap.sheetScroll = sb.scrollTop;
-  document.querySelectorAll("#shell input[id], #shell select[id], #shell textarea[id]").forEach(el => {
-    snap.fields[el.id] = (el.type === "checkbox" || el.type === "radio") ? { checked: el.checked } : { value: el.value };
-  });
-  const ae = document.activeElement;
-  if (ae && ae.id) {
-    snap.focusId = ae.id;
-    try { snap.selStart = ae.selectionStart; snap.selEnd = ae.selectionEnd; } catch (e) {}
-  }
-  return snap;
-}
-
-function restoreUiState(snap) {
-  if (snap.sheet === state.sheet) {
-    Object.keys(snap.fields).forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const s = snap.fields[id];
-      if ("checked" in s) el.checked = s.checked;
-      else if (el.value !== s.value) el.value = s.value;
-    });
-    const sb = document.getElementById("sheet-body");
-    if (sb) sb.scrollTop = snap.sheetScroll;
-    if (snap.focusId) {
-      const el = document.getElementById(snap.focusId);
-      if (el) {
-        el.focus({ preventScroll: true });
-        try { if (snap.selStart != null) el.setSelectionRange(snap.selStart, snap.selEnd); } catch (e) {}
-      }
-    }
-  }
-  window.scrollTo(0, snap.winY);
-  __lastRenderedSheet = state.sheet;
-}
-
 function render() {
-  const ae = document.activeElement;
-  if (state.sheet && ae && ae.matches && ae.matches("#sheet-body input, #sheet-body select, #sheet-body textarea")) {
-    // المستخدم بيكتب — أجّل الريندر لحد ما يخلص
-    clearTimeout(window.__deferRender);
-    window.__deferRender = setTimeout(render, 1500);
-    return;
-  }
-  const snap = captureUiState();
-  _renderCore();
-  restoreUiState(snap);
-}
-
-function _renderCore() {
   const root = document.getElementById("shell");
-  /* ✦ NEW: مفيش نت = مفيش تطبيق خالص. ده أول فحص قبل أي حاجة تانية (حتى قبل شاشة تسجيل الدخول)
-     عشان نمنع أي عملية أو حتى عرض بيانات قديمة وهمية وقت انقطاع النت. */
-  if (!__isOnline) {
-    root.innerHTML = renderOfflineScreen();
-    return;
-  }
   if (state.connectionError) {
     root.innerHTML = `
       <div class="loading-wrap">
@@ -1845,8 +1489,7 @@ function _renderCore() {
   if (state.tab === "today") bodyHtml = renderTodayView(live);
   else if (state.tab === "archive" && !state.viewDate) bodyHtml = renderArchiveView();
   else if (state.tab === "archive" && state.viewDate) bodyHtml = renderArchiveDetail();
-  else if (state.tab === "services" && isAdmin()) bodyHtml = renderServicesView();
-  else if (state.tab === "services" && !isAdmin()) { state.tab = "today"; bodyHtml = renderTodayView(live); }
+  else if (state.tab === "services") bodyHtml = renderServicesView();
 
   root.innerHTML = `
     ${renderHeader(state.dayData.status !== "not_started" ? profitTotal : null)}
@@ -1855,11 +1498,6 @@ function _renderCore() {
         ${icon("alert-triangle",{size:15,color:"#fff"})}
         <span style="flex:1;">${esc(state.saveError)}</span>
         <button class="icon-btn" onclick="state.saveError=null; render();">${icon("x",{size:14,color:"#fff"})}</button>
-      </div>` : ""}
-    ${state.activeDayLock ? `
-      <div style="position:sticky; top:0; z-index:40; background:var(--gold); color:#fff; padding:10px 16px; font-size:12.5px; display:flex; align-items:center; gap:8px;">
-        ${icon("alert-triangle",{size:15,color:"#fff"})}
-        <span style="flex:1;">${esc(state.activeDayLock.holderName)} بيعمل "${esc(state.activeDayLock.action || 'تعديل')}" على اليوم دلوقتي — استنى شوية</span>
       </div>` : ""}
     <div class="content">${bodyHtml}</div>
     ${renderTabBar()}
@@ -1917,9 +1555,6 @@ function renderHeader(profit) {
           <button class="icon-btn" title="بدء يوم جديد" onclick="confirmStartNewDay()" style="background:var(--ink-08); border-radius:10px;">
             ${icon("rotate-ccw", {size:17, color:"var(--header-fg)"})}
           </button>` : ""}` : ""}
-        <button class="icon-btn" title="تسجيل الخروج" onclick="logout()" style="background:var(--ink-08); border-radius:10px;">
-          ${icon("log-out", {size:17, color:"var(--header-fg)"})}
-        </button>
       </div>
     </div>
   `;
@@ -1929,7 +1564,7 @@ function renderTabBar() {
   const items = [
     { key: "today", label: "اليوم", i: "store", dot: state.dayData.status === "open" },
     { key: "archive", label: "الأرشيف", i: "archive" },
-    ...(isAdmin() ? [{ key: "services", label: "الاعدادات", i: "settings" }] : []),
+    { key: "services", label: "الاعدادات", i: "settings" },
   ];
   return `
     <div class="tab-bar-wrap">
@@ -1947,7 +1582,6 @@ function renderTabBar() {
 }
 
 function setTab(t) {
-  if (t === "services" && !isAdmin()) { return; } // ✦ NEW: منع فتح تاب الإعدادات لغير الأدمن حتى لو اتنادت الفانكشن يدويًا من الكونسول
   if (state.editingArchiveDay && t !== "archive") { exitArchiveEditMode(); }
   state.tab = t;
   state.viewDate = null;
@@ -1978,17 +1612,6 @@ function sectionHeader(key, label, extraRight) {
       </div>
     </div>
   `;
-}
-
-/* ✦ NEW: إجمالي أرصدة كل مكن الشحن مجمّعة مع بعض بإشارتها — فوري بيتجمع فيها الخانات الـ٣ (مدفوعات + خدمات موبايل + فيزا) */
-function computeMachinesTotal(live) {
-  return state.machines.reduce((sum, m) => {
-    const subs = machineSubs(m);
-    if (subs) {
-      return sum + subs.reduce((s2, sub) => s2 + machineBalValue(live.machines[m.id], sub), 0);
-    }
-    return sum + machineBalValue(live.machines[m.id]);
-  }, 0);
 }
 
 function renderBalancesGrid(live) {
@@ -2034,7 +1657,7 @@ function renderBalancesGrid(live) {
       `}
 
       ${state.machines.length ? `
-        ${sectionHeader("machines", "أرصدة مكن الشحن", machinesTotalInline(live))}
+        ${sectionHeader("machines", "أرصدة مكن الشحن")}
         ${c.machines ? `<div class="balance-collapsed-hint">مكن الشحن مخفية</div>` : `
           <div class="balance-row2" style="margin-bottom:8px;">
             ${state.machines.map(m => {
@@ -2095,14 +1718,6 @@ function balanceCard(iconName, label, value, walletId) {
       ${limitHtml}
     </div>
   `;
-}
-
-/* ✦ NEW: إجمالي أرصدة كل مكن الشحن — بيتحط جمب سهم الإظهار/الإخفاء في عنوان القسم */
-function machinesTotalInline(live) {
-  const total = computeMachinesTotal(live);
-  const neg = total < 0;
-  const display = state.balancesHidden ? "••••" : money(total);
-  return `<span class="num" style="font-size:13px; font-weight:700; color:${(neg && !state.balancesHidden) ? 'var(--rust)' : 'var(--ink)'};">${display}</span>`;
 }
 
 function fawryCard(m, live) {
@@ -2999,22 +2614,12 @@ function renderProfitBreakdownSheetBody() {
   `;
 }
 
-async function confirmDeleteTx(id) {
+function confirmDeleteTx(id) {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   if (confirm("تأكيد حذف المعاملة؟")) {
     const tx = state.dayData.transactions.find(t => t.id === id);
-    const updatedDay = { ...state.dayData, transactions: state.dayData.transactions.filter(t => t.id !== id) };
-    try {
-      await persistDay(state.today, updatedDay, state.dayData.status);
-    } catch (err) {
-      console.error("confirmDeleteTx save failed", err);
-      if (!(err && err.code === "day-status-changed")) {
-        alert("حصل خطأ أثناء حذف المعاملة: " + (err.message || err.code || err));
-      }
-      return;
-    }
-    state.dayData = updatedDay;
+    state.dayData = { ...state.dayData, transactions: state.dayData.transactions.filter(t => t.id !== id) };
+    persistDay(state.today, state.dayData);
     if (tx) applyLimitDelta(tx, null);
     render();
   }
@@ -3026,9 +2631,8 @@ function attachTodayEvents() {}
    =============================================================== */
 function openStartSheet() { if (!requireEdit()) return; state.sheet = "start"; render(); }
 
-async function confirmStartNewDay() {
+function confirmStartNewDay() {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   if (state.dayData.status === "not_started") { openStartSheet(); return; }
   if (state.dayData.status === "closed") {
     // ✦ اليوم مقفول بالفعل — ابدأ يوم شغل جديد بتاريخ النهاردة الحقيقي، من غير أي مسح لبيانات اليوم المقفول
@@ -3036,45 +2640,35 @@ async function confirmStartNewDay() {
     const freshKey = dateKey(new Date());
     const nextKey = freshKey !== closedKey ? freshKey : (closedKey + "-r" + Date.now()); // احتياطي نادر لو نفس التاريخ التقويمي
     if (!confirm("هيتم بدء يوم شغل جديد. بيانات اليوم المقفول الحالي هتفضل محفوظة زي ما هي في الأرشيف. متأكد؟")) return;
-    await runWithDayLock(closedKey, "بدء يوم جديد", async () => {
-      const freshData = emptyDay();
-      // ✦ نتأكد إن اليوم الجديد لسه فعلاً "لم يبدأ" على السيرفر قبل ما نكتب فوقه (تحسبًا لجهاز تاني بدأه في نفس اللحظة)
-      await persistDay(nextKey, freshData, "not_started").catch(() => { throw new Error("stop"); });
-      state.today = nextKey;
-      saveCurrentDayKey(nextKey);
-      state.dayReady = false;
-      switchDayListener();
-      state.dayData = freshData;
-      state.tab = "today"; state.sheet = null;
-      openStartSheet();
-    }).catch(() => {});
+    state.today = nextKey;
+    saveCurrentDayKey(nextKey);
+    state.dayReady = false;
+    switchDayListener();
+    state.dayData = emptyDay();
+    persistDay(state.today, state.dayData);
+    state.tab = "today"; state.sheet = null;
+    openStartSheet();
     return;
   }
   // اليوم لسه مفتوح (مش مقفول) — ده تصحيح غلطة على نفس اليوم
   if (!confirm("اليوم لسه مفتوح وفيه معاملات مسجلة. بدء يوم جديد هيمسح كل بيانات اليوم الحالي. متأكد؟")) return;
-  await runWithDayLock(state.today, "بدء يوم جديد (إعادة تعيين)", async () => {
-    if (db && (state.dayData.transactions || []).length > 0) {
-      await db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
-        .catch(err => console.error("backup before reset failed", err));
-    }
-    const freshData = emptyDay();
-    await persistDay(state.today, freshData, state.dayData.status).catch(() => { throw new Error("stop"); });
-    state.dayData = freshData;
-    state.tab = "today"; state.sheet = null;
-    openStartSheet();
-  }).catch(() => {});
+  if (db && (state.dayData.transactions || []).length > 0) {
+    db.collection("days_backup").doc(state.today + "__" + Date.now()).set(state.dayData)
+      .catch(err => console.error("backup before reset failed", err));
+  }
+  state.dayData = emptyDay();
+  persistDay(state.today, state.dayData);
+  state.tab = "today"; state.sheet = null;
+  openStartSheet();
 }
 
-async function reopenDay() {
+function reopenDay() {
   if (!requireEdit()) return;
   if (state.dayData.status !== "closed") return;
   if (!confirm("هيتم إعادة فتح اليوم عشان تقدر تضيف أو تعدّل معاملات فيه تاني. لما تخلّص تقدر تقفله تاني عادي. متأكد؟")) return;
-  await runWithDayLock(state.today, "إعادة فتح اليوم", async () => {
-    const updated = { ...state.dayData, status: "open" };
-    await persistDay(state.today, updated, "closed").catch(() => { throw new Error("stop"); });
-    state.dayData = updated;
-    render();
-  }).catch(() => {});
+  state.dayData = { ...state.dayData, status: "open" };
+  persistDay(state.today, state.dayData);
+  render();
 }
 
 function renderStartSheet() {
@@ -3148,9 +2742,8 @@ function renderStartSheet() {
   `;
 }
 
-async function submitStartDay() {
+function submitStartDay() {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   if (state.dayData.status !== "not_started" && (state.dayData.transactions || []).length > 0) {
     if (!confirm("فيه معاملات مسجلة بالفعل النهاردة! لو كملت هيتمسحوا نهائيًا. متأكد؟")) return;
   }
@@ -3194,14 +2787,11 @@ async function submitStartDay() {
     islamBalance: num(document.getElementById("sd-islam").value),
   };
   const nd = { ...emptyDay(), status: "open", opening, openedBy: state.userProfile?.username || "" };
-  const expectedStatus = state.dayData.status; // الحالة اللي إحنا شايفينها دلوقتي قبل الكتابة
-  await runWithDayLock(state.today, "بدء اليوم", async () => {
-    await persistDay(state.today, nd, expectedStatus).catch(() => { throw new Error("stop"); });
-    state.dayData = nd;
-    state.sheet = null;
-    state.txFilter = { category: "all", q: "" };
-    render();
-  }).catch(() => {});
+  state.dayData = nd;
+  persistDay(state.today, nd);
+  state.sheet = null;
+  state.txFilter = { category: "all", q: "" };
+  render();
 }
 
 /* ===============================================================
@@ -3314,9 +2904,8 @@ function renderEditOpeningSheet() {
   `;
 }
 
-async function submitEditOpening() {
+function submitEditOpening() {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const instapayAccountsData = {};
   ipAccounts.forEach(acc => {
@@ -3369,33 +2958,27 @@ async function submitEditOpening() {
   if (newDate !== oldDate) {
     // ✦ NEW: المستخدم غيّر تاريخ اليوم — انقل يوم الشغل بالكامل للتاريخ الجديد
     if (!confirm(`هيتم نقل يوم الشغل بالكامل لتاريخ ${displayDate(newDate)} بدل ${displayDate(oldDate)}. متأكد؟`)) return;
-    await runWithDayLock(oldDate, "تعديل الأرصدة الافتتاحية (نقل تاريخ)", async () => {
-      const newDayData = { ...state.dayData, opening };
-      // ✦ نتأكد إن التاريخ الجديد لسه فاضي على السيرفر قبل الكتابة عليه
-      await persistDay(newDate, newDayData, "not_started").catch(() => { throw new Error("stop"); });
-      // لو اليوم القديم كان لسه فاضي (لم يبدأ)، امسحه عشان منسيبش مستند يتيم في الأرشيف
-      if (state.dayData.status === "not_started" && db) {
-        await db.collection("days").doc(oldDate).delete().catch(err => console.warn("cleanup old empty day failed", err));
-      }
-      state.today = newDate;
-      saveCurrentDayKey(newDate);
-      state.dayData = newDayData;
-      state.dayReady = false;
-      switchDayListener();
-      state.eoSelectedDate = null;
-      state.sheet = null;
-      render();
-    }).catch(() => {});
+    const newDayData = { ...state.dayData, opening };
+    persistDay(newDate, newDayData);
+    // لو اليوم القديم كان لسه فاضي (لم يبدأ)، امسحه عشان منسيبش مستند يتيم في الأرشيف
+    if (state.dayData.status === "not_started" && db) {
+      db.collection("days").doc(oldDate).delete().catch(err => console.warn("cleanup old empty day failed", err));
+    }
+    state.today = newDate;
+    saveCurrentDayKey(newDate);
+    state.dayData = newDayData;
+    state.dayReady = false;
+    switchDayListener();
+    state.eoSelectedDate = null;
+    state.sheet = null;
+    render();
     return;
   }
 
-  await runWithDayLock(state.today, "تعديل الأرصدة الافتتاحية", async () => {
-    const updated = { ...state.dayData, opening };
-    await persistDay(state.today, updated, state.dayData.status).catch(() => { throw new Error("stop"); });
-    state.dayData = updated;
-    state.sheet = null;
-    render();
-  }).catch(() => {});
+  state.dayData = { ...state.dayData, opening };
+  persistDay(state.today, state.dayData);
+  state.sheet = null;
+  render();
 }
 
 /* ===============================================================
@@ -3410,7 +2993,7 @@ function openTxSheet(txId) {
     time: initial?.time || null,
     category: initial?.category || "vodafone",
     subtype: initial?.subtype || "سحب",
-    walletId: initial?.walletId || null,
+    walletId: initial?.walletId || "w1",
     machineId: initial?.machineId || (state.machines[0]?.id || ""),
     machineSub: initial?.machineSub || null,
     debtMachineId: initial?.machineId || (state.machines[0]?.id || ""), // ✦ NEW: للمديونية وسدادها
@@ -4110,9 +3693,8 @@ function validateMachineBalances(newTxs) {
   return true;
 }
 
-async function submitTx() {
+function submitTx() {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   syncTxFormFromInputs();
   const f = state.txForm;
   const destTrimmed = (f.destination || "").trim();
@@ -4121,8 +3703,6 @@ async function submitTx() {
   if (f.category !== "fawrySettlement" && !isFawryDebt && !(num(f.amount) > 0)) { alert("من فضلك اكتب مبلغ صحيح أكبر من صفر."); return; }
   if (isFawryDebt && !(num(f.debtMadfoat) > 0 || num(f.debtKhadamat) > 0)) { alert("اكتب مبلغ في خانة المدفوعات أو خدمات موبايل على الأقل."); return; }
   if (f.category === "machine" && !f.machineId) { alert("لازم تضيف مكينة شحن الأول."); return; }
-  if (f.category === "vodafone" && !f.walletId) { alert("برجاء اختيار المحفظة — لا يمكن إتمام المعاملة بدون تحديد المحفظة."); return; }
-  if (f.category === "instapay" && !f.instapayAccountId) { alert("برجاء اختيار حساب انستاباي — لا يمكن إتمام المعاملة بدون تحديده."); return; }
   const selMachine = f.category === "machine" ? state.machines.find(m => m.id === f.machineId) : null;
   const selSubs = selMachine ? machineSubs(selMachine) : null;
   if (selSubs && !f.machineSub) { alert("اختار البند (مدفوعات / خدمات موبايل / فيزا) الأول."); return; }
@@ -4196,25 +3776,15 @@ async function submitTx() {
 
   let txs;
   if (tx.id) txs = state.dayData.transactions.map(t => t.id === tx.id ? { ...tx } : t);
-  else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: formatTimeCairo(serverNowMs()), timeMs: serverNowMs() }];
+  else txs = [...state.dayData.transactions, { ...tx, id: genId(), time: timeNow() }];
 
   if (tx.category === "machine" && !validateMachineBalances(txs)) {
     alert("لا يمكن تنفيذ المعاملة حيث انها أكبر من الرصيد المتاح.");
     return;
   }
-  const updatedDay = { ...state.dayData, transactions: txs };
-  try {
-    // ✦ NEW: expectedStatus بيضمن إن اليوم لسه بنفس الحالة اللي إحنا شايفينها (مثلاً "open") وقت الحفظ،
-    // فلو حد قفل اليوم في نفس اللحظة، الحفظ ده بيترفض بدل ما يكتب معاملة فوق يوم مقفول من غير علم حد.
-    await persistDay(state.today, updatedDay, state.dayData.status);
-  } catch (err) {
-    console.error("submitTx save failed", err);
-    if (!(err && err.code === "day-status-changed")) {
-      alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err.code || err));
-    }
-    return;
-  }
-  state.dayData = updatedDay;
+  state.dayData = { ...state.dayData, transactions: txs };
+  try { persistDay(state.today, state.dayData); }
+  catch (err) { console.error("submitTx save failed", err); alert("حصل خطأ أثناء حفظ المعاملة: " + (err.message || err)); return; }
   applyLimitDelta(oldTx, tx);
   state.sheet = null; state.txForm = null;
   render();
@@ -4302,9 +3872,8 @@ function renderCloseSheetBody() {
   return html;
 }
 
-async function submitCloseDay() {
+function submitCloseDay() {
   if (!requireEdit()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   const ipAccounts = state.instapayAccounts || DEFAULT_INSTAPAY_ACCOUNTS;
   const instapayAccountsData = {};
   ipAccounts.forEach(acc => {
@@ -4333,32 +3902,28 @@ async function submitCloseDay() {
       return [m.id, el ? num(el.value) : 0];
     })),
   };
-  const expectedStatus = state.dayData.status;
-  await runWithDayLock(state.today, "إغلاق اليوم", async () => {
-    const updated = { ...state.dayData, status: "closed", closing, closedAt: timeNow(), closedBy: state.userProfile?.username || "" };
-    await persistDay(state.today, updated, expectedStatus).catch(() => { throw new Error("stop"); });
-    state.dayData = updated;
-    state.sheet = null;
-    // ✦ NEW: بعد الإغلاق، انتقل تلقائيًا ليوم الشغل التالي (تاريخ النهاردة الفعلي) عشان تقدر تبدأ يوم جديد على طول
-    if (!state.editingArchiveDay) {
-      const closedKey = state.today;
-      const freshKey = dateKey(new Date());
-      const nextKey = freshKey !== closedKey ? freshKey : closedKey; // لو لسه نفس اليوم التقويمي، سيبه زي ما هو
-      if (nextKey !== closedKey) {
-        state.today = nextKey;
-        saveCurrentDayKey(nextKey);
-        state.dayReady = false;
-        switchDayListener();
-      }
+  state.dayData = { ...state.dayData, status: "closed", closing, closedAt: timeNow(), closedBy: state.userProfile?.username || "" };
+  persistDay(state.today, state.dayData);
+  state.sheet = null;
+  // ✦ NEW: بعد الإغلاق، انتقل تلقائيًا ليوم الشغل التالي (تاريخ النهاردة الفعلي) عشان تقدر تبدأ يوم جديد على طول
+  if (!state.editingArchiveDay) {
+    const closedKey = state.today;
+    const freshKey = dateKey(new Date());
+    const nextKey = freshKey !== closedKey ? freshKey : closedKey; // لو لسه نفس اليوم التقويمي، سيبه زي ما هو
+    if (nextKey !== closedKey) {
+      state.today = nextKey;
+      saveCurrentDayKey(nextKey);
+      state.dayReady = false;
+      switchDayListener();
     }
-    render();
-  }).catch(() => {});
+  }
+  render();
 }
 
 /* ===============================================================
    Add Machine Sheet
    =============================================================== */
-function openAddMachineSheet() { if (!requireAdmin()) return; state.sheet = "addMachine"; render(); }
+function openAddMachineSheet() { if (!requireEdit()) return; state.sheet = "addMachine"; render(); }
 function renderAddMachineSheetBody() {
   return `<div class="field"><div class="field-label">اسم المكينة</div><input type="text" class="input" placeholder="مثال: فوري" id="am-name" autofocus oninput="updateAddMachineBtn()"></div>`;
 }
@@ -4368,7 +3933,7 @@ function updateAddMachineBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddMachine() {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   const name = (document.getElementById("am-name")?.value || "").trim();
   if (!name) return;
   state.machines = [...state.machines, { id: genId(), name }];
@@ -4380,7 +3945,7 @@ function submitAddMachine() {
    ✦ NEW: Add Instapay Account Sheet
    =============================================================== */
 function openAddInstapaySheet() {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   state.sheet = "addInstapay";
   render();
 }
@@ -4393,7 +3958,7 @@ function updateAddInstapayBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddInstapay() {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   const name = (document.getElementById("ai-name")?.value || "").trim();
   if (!name) return;
   state.instapayAccounts = [...(state.instapayAccounts || []), { id: genId(), name }];
@@ -4401,7 +3966,7 @@ function submitAddInstapay() {
   state.sheet = null; render();
 }
 function confirmDeleteInstapay(id, name) {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   if ((state.instapayAccounts || []).length <= 1) { alert("لازم يفضل حساب انستاباي واحد على الأقل."); return; }
   if (confirm(`حذف "${name}"؟`)) {
     state.instapayAccounts = (state.instapayAccounts || []).filter(a => a.id !== id);
@@ -4410,12 +3975,12 @@ function confirmDeleteInstapay(id, name) {
   }
 }
 function startEditInstapay(id) {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   state.editingInstapayId = id;
   render();
 }
 function saveInstapayName(id) {
-  if (!requireAdmin()) { state.editingInstapayId = null; render(); return; }
+  if (!requireEdit()) { state.editingInstapayId = null; render(); return; }
   const el = document.getElementById("instapay-edit-input");
   const name = el ? el.value.trim() : "";
   if (name) {
@@ -4430,7 +3995,7 @@ function saveInstapayName(id) {
    ✦ NEW: Add Wallet Sheet
    =============================================================== */
 function openAddWalletSheet() {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   state.sheet = "addWallet";
   render();
 }
@@ -4443,7 +4008,7 @@ function updateAddWalletBtn() {
   if (btn) btn.disabled = !val;
 }
 function submitAddWallet() {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   const name = (document.getElementById("aw-name")?.value || "").trim();
   if (!name) return;
   const id = genId();
@@ -4456,7 +4021,7 @@ function submitAddWallet() {
   state.sheet = null; render();
 }
 function confirmDeleteWallet(id, name) {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   if (getWalletIds().length <= 1) { alert("لازم تفضل محفظة واحدة على الأقل."); return; }
   if (confirm(`حذف "${name}"؟`)) {
     const { [id]: _removedName, ...restNames } = state.walletNames;
@@ -4568,13 +4133,7 @@ function openArchiveDay(d) {
 /* ✦ NEW: الدخول في وضع تعديل يوم من الأرشيف — بيستخدم نفس شاشات المعاملات/الافتتاحية/الإغلاق العادية */
 function enterArchiveEditMode() {
   if (!isAdmin()) { alert("الأدمن بس اللي يقدر يعدّل في أيام الأرشيف."); return; }
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   if (!state.archiveDayData) return;
-  // ✦ NEW: تحذير استباقي لو حد تاني ماسك قفل اليوم ده دلوقتي (القفل الفعلي بيتاخد مع كل عملية حفظ لاحقة تلقائيًا)
-  if (state.activeDayLock) {
-    alert(`في حد تاني (${state.activeDayLock.holderName}) بيعمل "${state.activeDayLock.action || 'عملية'}" دلوقتي. استنى لحد ما يخلص الأول.`);
-    return;
-  }
   if (!confirm(`هتدخل في وضع تعديل يوم ${displayDate(state.viewDate)}. أي تعديل هيتسجل فورًا على البيانات المحفوظة. متأكد؟`)) return;
   state.liveDayBackup = { key: state.today, data: state.dayData };
   state.editingArchiveDay = true;
@@ -4678,9 +4237,8 @@ function renderArchiveDateEditSheetBody() {
 }
 
 /* ✦ NEW: تنفيذ تغيير تاريخ يوم أرشيف — بيتعامل مع حالتين: نقل لتاريخ أرشيف تاني، أو نقل لتاريخ النهاردة (وربما استبدال يوم مفتوح) */
-async function submitArchiveDateEdit() {
+function submitArchiveDateEdit() {
   if (!isAdmin()) return;
-  if (!__isOnline) { alert("مفيش اتصال بالإنترنت. وصّل بالنت الأول."); return; }
   const ed = state.archiveDateEdit;
   if (!ed) return;
   const oldKey = state.viewDate;
@@ -4692,12 +4250,8 @@ async function submitArchiveDateEdit() {
 
   if (newKey === realToday) {
     // ✦ الحالة الخاصة: المستخدم عايز يوم الأرشيف ده يبقى هو "النهاردة" ويتنقل للصفحة الرئيسية
-    await runWithDayLock(realToday, "نقل يوم أرشيف لليوم الحالي", async () => {
-      let currentTodayData;
-      try {
-        const snap = await db.collection("days").doc(realToday).get();
-        currentTodayData = snap.exists ? snap.data() : emptyDay();
-      } catch (err) { alert("تعذر التحقق من يوم النهاردة: " + (err.message || err)); return; }
+    db.collection("days").doc(realToday).get().then(snap => {
+      const currentTodayData = snap.exists ? snap.data() : emptyDay();
       const hasRealData = currentTodayData.status !== "not_started";
       const msg = hasRealData
         ? `فيه يوم شغل مفتوح بالفعل بتاريخ النهاردة (${displayDate(realToday)}) وفيه بيانات مسجّلة. هيتم حذفه نهائيًا واستبداله ببيانات يوم ${displayDate(oldKey)}. متأكد؟`
@@ -4705,14 +4259,8 @@ async function submitArchiveDateEdit() {
       if (!confirm(msg)) return;
 
       const movedData = { ...dayPayload };
-      try {
-        // ✦ نتأكد إن حالة اليوم الحالي لسه زي ما شفناها بالظبط قبل ما نستبدلها
-        await persistDay(realToday, movedData, currentTodayData.status);
-        await db.collection("days").doc(oldKey).delete();
-      } catch (err) {
-        alert("تعذر نقل اليوم: " + (err.message || err.code || err));
-        return;
-      }
+      persistDay(realToday, movedData);
+      db.collection("days").doc(oldKey).delete().catch(err => console.warn("cleanup old archive day failed", err));
       saveCurrentDayKey(realToday);
       state.today = realToday;
       state.dayData = movedData;
@@ -4724,34 +4272,25 @@ async function submitArchiveDateEdit() {
       state.archiveDayData = null;
       state.tab = "today"; // ✦ نقل فعلي من الأرشيف للصفحة الرئيسية
       render();
-    }).catch(() => {});
+    }).catch(err => alert("تعذر التحقق من يوم النهاردة: " + (err.message || err)));
     return;
   }
 
   // ✦ نقل عادي بين تاريخين في الأرشيف (مش النهاردة)
-  await runWithDayLock(newKey, "نقل يوم أرشيف", async () => {
-    let existing;
-    try {
-      const snap = await db.collection("days").doc(newKey).get();
-      existing = snap.exists ? snap.data() : null;
-    } catch (err) { alert("تعذر نقل اليوم: " + (err.message || err)); return; }
+  db.collection("days").doc(newKey).get().then(snap => {
+    const existing = snap.exists ? snap.data() : null;
     if (existing && existing.status !== "not_started") {
       alert(`يوم ${displayDate(newKey)} فيه بيانات مسجّلة بالفعل، اختار تاريخ تاني.`);
       return;
     }
     if (!confirm(`هيتم نقل بيانات يوم ${displayDate(oldKey)} لتاريخ ${displayDate(newKey)}. متأكد؟`)) return;
-    try {
-      await persistDay(newKey, dayPayload, existing ? existing.status : "not_started");
-      await db.collection("days").doc(oldKey).delete();
-    } catch (err) {
-      alert("تعذر نقل اليوم: " + (err.message || err.code || err));
-      return;
-    }
+    persistDay(newKey, dayPayload);
+    db.collection("days").doc(oldKey).delete().catch(err => console.warn("cleanup old archive day failed", err));
     state.sheet = null;
     state.archiveDateEdit = null;
     // ✦ افتح نفس اليوم لكن بمفتاحه الجديد
     openArchiveDay(newKey);
-  }).catch(() => {});
+  }).catch(err => alert("تعذر نقل اليوم: " + (err.message || err)));
 }
 
 function renderArchiveDetail() {
@@ -5000,17 +4539,17 @@ function renderUsersSection() {
 }
 
 /* ---- wallet name/limit/commission edit helpers ---- */
-function startEditWallet(id) { if (!requireAdmin()) return; state.editingWalletId = id; render(); }
+function startEditWallet(id) { if (!requireEdit()) return; state.editingWalletId = id; render(); }
 function saveWalletName(id) {
-  if (!requireAdmin()) { state.editingWalletId = null; render(); return; }
+  if (!requireEdit()) { state.editingWalletId = null; render(); return; }
   const el = document.getElementById("wallet-edit-input");
   const name = el ? el.value.trim() : "";
   if (name) { state.walletNames = { ...state.walletNames, [id]: name }; saveWalletNames(state.walletNames); }
   state.editingWalletId = null; render();
 }
-function startEditWalletLimit(id) { if (!requireAdmin()) return; state.editingWalletLimitId = id; render(); }
+function startEditWalletLimit(id) { if (!requireEdit()) return; state.editingWalletLimitId = id; render(); }
 function saveWalletLimitUsed(id) {
-  if (!requireAdmin()) { state.editingWalletLimitId = null; render(); return; }
+  if (!requireEdit()) { state.editingWalletLimitId = null; render(); return; }
   const el = document.getElementById("wl-limit-input-" + id);
   const used = el ? num(el.value) : num(state.walletLimits[id]);
   state.walletLimits = { ...state.walletLimits, [id]: used };
@@ -5018,7 +4557,7 @@ function saveWalletLimitUsed(id) {
   state.editingWalletLimitId = null; render();
 }
 function confirmDeleteMachine(id, name) {
-  if (!requireAdmin()) return;
+  if (!requireEdit()) return;
   if (confirm(`حذف "${name}"؟`)) { state.machines = state.machines.filter(m => m.id !== id); saveMachines(state.machines); render(); }
 }
 
@@ -5243,12 +4782,6 @@ setTimeout(checkForAppUpdate, 15000);
 /* ===============================================================
    Boot
    =============================================================== */
-/* ✦ NEW: محاولة أخيرة (best-effort) لتنظيف قفل اليوم لو التبويب اتقفل فجأة أثناء عملية —
-   مش مضمونة 100% (المتصفح ممكن يقطع الطلب) لكن DAY_LOCK_MAX_AGE_MS هو خط الدفاع الأخير المضمون */
-window.addEventListener("beforeunload", () => {
-  if (db && state.authUser) { try { releaseDayLock(); } catch (e) {} }
-});
-
 bootApp();
 </script>
 </body>
